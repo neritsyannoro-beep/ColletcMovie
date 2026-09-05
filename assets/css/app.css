@@ -356,6 +356,15 @@ body::before {
 }
 .hint--error { color: var(--danger); border-color: rgba(255,92,114,.35); background: rgba(255,92,114,.08); }
 
+.tip {
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px dashed var(--line);
+  border-radius: var(--r-md);
+  background: rgba(124, 92, 255, .07);
+}
+.tip__text { margin: 0 0 10px; font-size: 13px; color: var(--text-dim); line-height: 1.5; }
+
 .manual-add { margin-top: 18px; }
 
 /* ============================ КНОПКИ ============================ */

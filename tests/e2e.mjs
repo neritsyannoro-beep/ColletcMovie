@@ -209,8 +209,62 @@ await page.route('**/api.themoviedb.org/3/search/movie**', r => r.fulfill({ stat
 await page.locator('#search-input').fill('inception2');
 await page.waitForTimeout(1800);
 const warn = await page.locator('#search-status').textContent();
-ok('ошибка ключа показана', /ключ/i.test(warn||''), warn||'пусто');
+ok('сбой источника назван по-человечески', /Не ответила/i.test(warn||''), warn||'пусто');
 
+
+// ---- 18. Jikan лежит -> подхватывается AniList ----
+await page.evaluate(() => localStorage.setItem('collectmovie:prefs', '{}'));
+await page.reload({ waitUntil:'networkidle' });
+await page.route('**/api.jikan.moe/**', r => r.fulfill({ status:504, contentType:'text/html', body:'gateway timeout' }));
+await page.route('**/graphql.anilist.co/**', r => r.fulfill({ contentType:'application/json', body: JSON.stringify({
+  data:{ Page:{ media:[{ id:97940, title:{ english:'Black Clover', romaji:'Black Clover' },
+    startDate:{year:2017}, coverImage:{large:''}, description:'<p>Аста и Юно.</p>',
+    episodes:170, genres:['Action'], popularity:500000 }]}}})}));
+await page.locator('.tab[data-goto="search"]').click();
+await page.locator('#search-input').fill('black clover');
+await page.waitForSelector('#search-list .item', { timeout: 15000 });
+const fbTitles = await page.locator('#search-list .item__title').allTextContents();
+ok('AniList подхватывает, когда Jikan лежит', fbTitles.some(t=>t.includes('Black Clover')), fbTitles.join(' | '));
+ok('про сбой не сообщаем, раз запасная база ответила',
+   await page.locator('#search-status').isHidden(), await page.locator('#search-status').textContent());
+
+// ---- 19. обе аниме-базы лежат -> внятная ошибка ----
+await page.unroute('**/graphql.anilist.co/**');
+await page.route('**/graphql.anilist.co/**', r => r.fulfill({ status:503, body:'{}' }));
+await page.locator('#search-input').fill('черный клевер');
+await page.waitForTimeout(2500);
+const bothDown = await page.locator('#search-status').textContent();
+ok('обе базы легли — сказано какая', /аниме-база/i.test(bothDown||''), bothDown||'пусто');
+
+// ---- 20. подсказка про ключ TMDB на бедной выдаче ----
+ok('подсказка про ключ показана', !(await page.locator('#search-tip').isHidden()));
+
+// ---- 21. TMDB: японская анимация распознаётся как аниме ----
+await page.evaluate(() => localStorage.setItem('collectmovie:prefs', JSON.stringify({ tmdbKey:'K', lang:'ru-RU' })));
+await page.reload({ waitUntil:'networkidle' });
+await page.route('**/api.themoviedb.org/3/genre/**', r => r.fulfill({ contentType:'application/json',
+  body: JSON.stringify({ genres:[{id:16,name:'Мультфильм'}] })}));
+await page.route('**/api.themoviedb.org/3/search/tv**', r => r.fulfill({ contentType:'application/json',
+  body: JSON.stringify({ results:[{ id:1, name:'Чёрный клевер', original_name:'ブラッククローバー',
+    first_air_date:'2017-10-03', poster_path:null, overview:'Аста и Юно.',
+    genre_ids:[16], original_language:'ja', popularity:90 }]})}));
+await page.route('**/api.themoviedb.org/3/search/movie**', r => r.fulfill({ contentType:'application/json',
+  body: JSON.stringify({ results:[] })}));
+await page.locator('.tab[data-goto="search"]').click();
+await page.locator('#search-input').fill('чёрный клевер');
+await page.waitForSelector('#search-list .item', { timeout: 15000 });
+const tmdbAnime = await page.locator('#search-list .item').first().innerText();
+ok('TMDB: японская анимация помечена как аниме', /Аниме/.test(tmdbAnime), tmdbAnime.replace(/\n/g,' / '));
+ok('русское название из TMDB', /Чёрный клевер/.test(tmdbAnime));
+ok('подсказка про ключ скрыта, раз ключ есть', await page.locator('#search-tip').isHidden());
+
+// ---- 22. вкладка «Аниме» с ключом отдаёт только аниме ----
+await page.locator('#search-type-chips .chip[data-type="anime"]').click();
+await page.waitForTimeout(2000);
+const animeOnly = await page.locator('#search-list .item .badge--anime').count();
+const animeTotal = await page.locator('#search-list .item').count();
+ok('во вкладке «Аниме» только аниме', animeTotal > 0 && animeOnly === animeTotal,
+   `аниме ${animeOnly} из ${animeTotal}`);
 
 } catch (err) {
   console.log('\n!!! ТЕСТ УПАЛ: ' + err.message.split('\n')[0]);

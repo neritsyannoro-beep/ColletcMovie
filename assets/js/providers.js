@@ -1,12 +1,17 @@
 /**
- * Источники поиска.
+ * Источники поиска. Все запросы идут прямо из браузера, сервер не нужен.
  *
- * Аниме   — Jikan (MyAnimeList), без ключа.
- * Сериалы — TVmaze, без ключа. С ключом TMDB — TMDB (лучше и по-русски).
- * Фильмы  — iTunes Search (без ключа, русский стор даёт русские названия).
- *           С ключом TMDB — TMDB.
+ * Без ключа:
+ *   аниме   — Jikan (MyAnimeList), при сбое — AniList;
+ *   сериалы — TVmaze;
+ *   фильмы  — iTunes Search.
+ *   Все три ищут по оригинальным названиям, поэтому русские запросы
+ *   находятся плохо — это ограничение самих баз, а не приложения.
  *
- * Все запросы идут прямо из браузера, сервер приложению не нужен.
+ * С ключом TMDB:
+ *   фильмы и сериалы ищутся в TMDB с русскими названиями, аниме оттуда же
+ *   распознаётся по языку и жанру, а Jikan/AniList добавляют то, чего в
+ *   TMDB нет.
  */
 
 const TMDB_API = 'https://api.themoviedb.org/3';
@@ -39,6 +44,28 @@ async function fetchJSON(url, { timeout = 12000 } = {}) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Повторяет запрос при разрыве связи или ошибке сервера. Именно на этом
+ * спотыкался Jikan: он периодически отвечает 5xx, и без повтора аниме
+ * просто пропадало из выдачи.
+ */
+async function withRetry(run, tries = 2) {
+  let last;
+  for (let attempt = 0; attempt < tries; attempt++) {
+    try {
+      return await run();
+    } catch (err) {
+      last = err;
+      const retriable = !err.status || err.status >= 500 || err.status === 429;
+      if (!retriable || attempt === tries - 1) break;
+      await delay(500);
+    }
+  }
+  throw last;
 }
 
 /**
@@ -102,11 +129,14 @@ async function searchTMDB(query, kind, { key, lang }) {
   }
 
   const genres = await tmdbGenres(kind === 'movie' ? 'movie' : 'tv', key, lang);
-  const type = kind === 'movie' ? 'movie' : 'series';
+  const base = kind === 'movie' ? 'movie' : 'series';
 
   return (data.results || []).map((r) => ({
     id:            `tmdb-${kind}-${r.id}`,
-    type,
+    // Японская анимация — это аниме, даже если TMDB считает её обычным
+    // сериалом или мультфильмом (16 — жанр «Анимация»).
+    type:          r.original_language === 'ja' && (r.genre_ids || []).includes(16)
+                     ? 'anime' : base,
     title:         r.title || r.name || 'Без названия',
     originalTitle: (r.original_title || r.original_name || '') !== (r.title || r.name || '')
                      ? (r.original_title || r.original_name || '') : '',
@@ -122,11 +152,11 @@ async function searchTMDB(query, kind, { key, lang }) {
 
 /* ---------------------------------- Jikan --------------------------------- */
 
-async function searchAnime(query) {
+async function searchJikan(query) {
   const url = `https://api.jikan.moe/v4/anime`
     + `?q=${encodeURIComponent(query)}&limit=20&sfw=true`;
 
-  const data = await fetchJSON(url);
+  const data = await withRetry(() => fetchJSON(url));
 
   return (data.data || []).map((a) => {
     const title = a.title_english || a.title || a.title_japanese || 'Без названия';
@@ -148,10 +178,75 @@ async function searchAnime(query) {
   });
 }
 
+/* -------------------------------- AniList --------------------------------- */
+
+/** Запасная аниме-база: нужна, когда Jikan лежит (а он это любит). */
+async function searchAniList(query) {
+  const gql = `query ($q: String) {
+    Page(perPage: 20) {
+      media(search: $q, type: ANIME, sort: SEARCH_MATCH) {
+        id
+        title { romaji english native }
+        startDate { year }
+        coverImage { large }
+        description
+        episodes
+        genres
+        popularity
+      }
+    }
+  }`;
+
+  const res = await fetch('https://graphql.anilist.co', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ query: gql, variables: { q: query } }),
+  });
+  if (!res.ok) {
+    const err = new Error(`HTTP ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
+  const data = await res.json();
+
+  return (data?.data?.Page?.media || []).map((a) => {
+    const title = a.title?.english || a.title?.romaji || a.title?.native || 'Без названия';
+    const orig = a.title?.romaji && a.title.romaji !== title ? a.title.romaji : '';
+    return {
+      id:            `anilist-${a.id}`,
+      type:          'anime',
+      title,
+      originalTitle: orig,
+      year:          a.startDate?.year || null,
+      poster:        a.coverImage?.large || '',
+      overview:      stripHTML(a.description || ''),
+      genres:        a.genres || [],
+      source:        'anilist',
+      sourceId:      a.id,
+      episodes:      a.episodes || null,
+      popularity:    a.popularity || 0,
+    };
+  });
+}
+
+/** Аниме: сперва Jikan, если не отвечает — AniList. */
+async function searchAnime(query) {
+  try {
+    return await searchJikan(query);
+  } catch (jikanError) {
+    try {
+      return await searchAniList(query);
+    } catch {
+      throw jikanError;   // сообщаем про основную базу, а не про запасную
+    }
+  }
+}
+
 /* --------------------------------- TVmaze --------------------------------- */
 
 async function searchTVmaze(query) {
-  const data = await fetchJSON(`https://api.tvmaze.com/search/shows?q=${encodeURIComponent(query)}`);
+  const data = await withRetry(() =>
+    fetchJSON(`https://api.tvmaze.com/search/shows?q=${encodeURIComponent(query)}`));
 
   return (data || []).map(({ show: s }) => ({
     id:            `tvmaze-${s.id}`,
@@ -201,40 +296,68 @@ async function searchITunes(query, lang) {
  * @param {string} query
  * @param {'all'|'movie'|'series'|'anime'} type
  * @param {{tmdbKey?:string, lang?:string}} prefs
- * @returns {Promise<{results:Array, warnings:string[]}>}
+ * @returns {Promise<{results:Array, warnings:string[], hasKey:boolean}>}
  */
 export async function search(query, type, prefs = {}) {
   const q = query.trim();
-  if (q.length < 2) return { results: [], warnings: [] };
+  const key = (prefs.tmdbKey || '').trim();
+  if (q.length < 2) return { results: [], warnings: [], hasKey: Boolean(key) };
 
-  const key  = (prefs.tmdbKey || '').trim();
   const lang = prefs.lang || 'ru-RU';
+  const want = (t) => type === 'all' || type === t;
   const jobs = [];
 
-  const wantMovie  = type === 'all' || type === 'movie';
-  const wantSeries = type === 'all' || type === 'series';
-  const wantAnime  = type === 'all' || type === 'anime';
+  if (key) {
+    // Аниме в TMDB лежит среди фильмов и сериалов, поэтому для вкладки
+    // «Аниме» тоже нужны оба запроса — тип разберём после ответа.
+    if (want('movie')  || want('anime')) jobs.push(['TMDB', searchTMDB(q, 'movie', { key, lang })]);
+    if (want('series') || want('anime')) jobs.push(['TMDB', searchTMDB(q, 'tv',    { key, lang })]);
+  } else {
+    if (want('movie'))  jobs.push(['база фильмов (iTunes)',  searchITunes(q, lang)]);
+    if (want('series')) jobs.push(['база сериалов (TVmaze)', searchTVmaze(q)]);
+  }
+  if (want('anime')) jobs.push(['аниме-база', searchAnime(q)]);
 
-  if (wantMovie) {
-    jobs.push(key ? searchTMDB(q, 'movie', { key, lang }) : searchITunes(q, lang));
-  }
-  if (wantSeries) {
-    jobs.push(key ? searchTMDB(q, 'tv', { key, lang }) : searchTVmaze(q));
-  }
-  if (wantAnime) {
-    jobs.push(searchAnime(q));
-  }
-
-  const settled = await Promise.allSettled(jobs);
+  const settled = await Promise.allSettled(jobs.map(([, promise]) => promise));
 
   const results = [];
-  const warnings = [];
-  for (const r of settled) {
-    if (r.status === 'fulfilled') results.push(...r.value);
-    else warnings.push(r.reason?.message || 'источник не ответил');
-  }
+  const failed = [];
+  settled.forEach((outcome, i) => {
+    if (outcome.status === 'fulfilled') results.push(...outcome.value);
+    else failed.push(jobs[i][0]);
+  });
 
-  return { results: rank(results, q), warnings: [...new Set(warnings)] };
+  // Тип у результатов TMDB уточняется уже после ответа, поэтому лишнее
+  // отсеиваем здесь, а не на этапе выбора запросов.
+  const matching = type === 'all' ? results : results.filter((r) => r.type === type);
+
+  return {
+    results: rank(dedupe(matching), q),
+    warnings: [...new Set(failed)],
+    hasKey: Boolean(key),
+  };
+}
+
+/** Насколько источнику стоит доверять, если один и тот же тайтл пришёл дважды. */
+const SOURCE_RANK = { tmdb: 4, jikan: 3, anilist: 2, tvmaze: 1, itunes: 1 };
+
+/** Схлопывает дубли: один тайтл легко приходит сразу из двух баз. */
+function dedupe(items) {
+  const keyOf = (item) => [
+    item.type,
+    (item.title || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ''),
+    item.year ?? '',
+  ].join('|');
+
+  const best = new Map();
+  for (const item of items) {
+    const k = keyOf(item);
+    const prev = best.get(k);
+    if (!prev || (SOURCE_RANK[item.source] || 0) > (SOURCE_RANK[prev.source] || 0)) {
+      best.set(k, item);
+    }
+  }
+  return [...best.values()];
 }
 
 /** Сортирует выдачу: точное совпадение названия выше, потом популярность. */

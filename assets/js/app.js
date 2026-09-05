@@ -97,6 +97,7 @@ async function runSearch() {
     list.innerHTML = '';
     status.hidden = true;
     idle.hidden = false;
+    $('#search-tip').hidden = true;
     return;
   }
 
@@ -112,26 +113,33 @@ async function runSearch() {
   } catch (err) {
     if (seq !== searchState.seq) return;
     status.className = 'hint hint--error';
-    status.textContent = `Не получилось: ${err.message}`;
+    status.textContent = `Поиск не сработал: ${err.message}`;
     return;
   }
   if (seq !== searchState.seq) return;   // пришёл ответ на устаревший запрос
 
   searchState.results = payload.results;
 
+  // Подсказка про ключ уместна ровно тогда, когда выдача бедная.
+  $('#search-tip').hidden = payload.hasKey || payload.results.length >= 5;
+
+  const failed = payload.warnings.length
+    ? `Не ответила ${payload.warnings.join(' и ')}`
+    : '';
+
   if (!payload.results.length) {
     list.innerHTML = '';
-    status.className = 'hint';
-    status.textContent = payload.warnings.length
-      ? `Ничего не нашлось. Источники ответили с ошибкой: ${payload.warnings.join('; ')}`
-      : 'Ничего не нашлось. Можно добавить вручную — кнопка внизу.';
+    status.className = failed ? 'hint hint--error' : 'hint';
+    status.textContent = failed
+      ? `${failed}. Попробуй ещё раз через минуту или добавь вручную.`
+      : 'Ничего не нашлось. Попробуй оригинальное название или добавь вручную.';
     return;
   }
 
-  status.hidden = !payload.warnings.length;
-  if (payload.warnings.length) {
+  status.hidden = !failed;
+  if (failed) {
     status.className = 'hint';
-    status.textContent = `Часть источников не ответила (${payload.warnings.join('; ')}) — показываю остальное.`;
+    status.textContent = `${failed} — показываю то, что нашли остальные.`;
   }
 
   list.innerHTML = payload.results
