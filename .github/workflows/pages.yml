@@ -25,7 +25,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # enablement: включает Pages сам, если он ещё не настроен в Settings
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
 
       # Статика без сборки — публикуем содержимое репозитория как есть.
       - uses: actions/upload-pages-artifact@v3
