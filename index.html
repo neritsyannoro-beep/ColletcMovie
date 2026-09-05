@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=5">
+<title>CollectMovie — трекер фильмов, сериалов и аниме</title>
+<meta name="description" content="Личный трекер просмотренного: фильмы, сериалы, аниме. Оценки 1–10, всё хранится локально на телефоне.">
+<meta name="theme-color" content="#0e0d15">
+<meta name="color-scheme" content="dark">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png" sizes="192x192" type="image/png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="CollectMovie">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="stylesheet" href="assets/css/app.css">
+</head>
+<body>
+
+<div id="app" class="app">
+
+  <!-- ======================= БИБЛИОТЕКА ======================= -->
+  <section class="screen" id="screen-library" data-screen="library">
+    <header class="topbar">
+      <div class="topbar__row">
+        <h1 class="topbar__title">Библиотека</h1>
+        <span class="topbar__count" id="lib-count">0</span>
+        <label class="select select--inline">
+          <span class="sr-only">Сортировка</span>
+          <select id="lib-sort" aria-label="Сортировка">
+            <option value="added_desc">Сначала новые</option>
+            <option value="added_asc">Сначала старые</option>
+            <option value="rating_desc">Оценка ↓</option>
+            <option value="rating_asc">Оценка ↑</option>
+            <option value="title_asc">А–Я</option>
+            <option value="year_desc">Год ↓</option>
+          </select>
+        </label>
+      </div>
+      <div class="field field--search">
+        <svg class="field__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4a7 7 0 1 1 0 14 7 7 0 0 1 0-14Zm9 16-4.35-4.35"/></svg>
+        <input id="lib-search" class="field__input" type="search" inputmode="search"
+               placeholder="Поиск по коллекции" autocomplete="off" enterkeyhint="search">
+        <button class="field__clear" id="lib-search-clear" type="button" aria-label="Очистить" hidden>&times;</button>
+      </div>
+      <div class="chips" id="lib-type-chips" role="tablist" aria-label="Тип">
+        <button class="chip is-active" data-type="all" role="tab">Всё</button>
+        <button class="chip" data-type="movie" role="tab">Фильмы</button>
+        <button class="chip" data-type="series" role="tab">Сериалы</button>
+        <button class="chip" data-type="anime" role="tab">Аниме</button>
+      </div>
+      <div class="chips chips--sub" id="lib-status-chips" role="tablist" aria-label="Статус">
+        <button class="chip chip--sm is-active" data-status="all" role="tab">Все статусы</button>
+        <button class="chip chip--sm" data-status="watched" role="tab">Просмотрено</button>
+        <button class="chip chip--sm" data-status="watching" role="tab">Смотрю</button>
+        <button class="chip chip--sm" data-status="planned" role="tab">В планах</button>
+        <button class="chip chip--sm" data-status="dropped" role="tab">Брошено</button>
+      </div>
+    </header>
+
+    <div class="screen__body">
+      <div id="lib-list" class="list"></div>
+      <div id="lib-empty" class="empty" hidden>
+        <div class="empty__art">🎬</div>
+        <p class="empty__title">Пока пусто</p>
+        <p class="empty__text">Найди фильм, сериал или аниме на вкладке «Поиск» и добавь в коллекцию.</p>
+        <button class="btn btn--primary" data-goto="search">Перейти к поиску</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================= ПОИСК ======================= -->
+  <section class="screen" id="screen-search" data-screen="search" hidden>
+    <header class="topbar">
+      <div class="topbar__row">
+        <h1 class="topbar__title">Поиск</h1>
+      </div>
+      <div class="field field--search">
+        <svg class="field__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4a7 7 0 1 1 0 14 7 7 0 0 1 0-14Zm9 16-4.35-4.35"/></svg>
+        <input id="search-input" class="field__input" type="search" inputmode="search"
+               placeholder="Название фильма, сериала, аниме" autocomplete="off" enterkeyhint="search">
+        <button class="field__clear" id="search-clear" type="button" aria-label="Очистить" hidden>&times;</button>
+      </div>
+      <div class="chips" id="search-type-chips" role="tablist" aria-label="Где искать">
+        <button class="chip is-active" data-type="all" role="tab">Везде</button>
+        <button class="chip" data-type="movie" role="tab">Фильмы</button>
+        <button class="chip" data-type="series" role="tab">Сериалы</button>
+        <button class="chip" data-type="anime" role="tab">Аниме</button>
+      </div>
+    </header>
+
+    <div class="screen__body">
+      <div id="search-status" class="hint" hidden></div>
+      <div id="search-list" class="list"></div>
+      <div id="search-idle" class="empty">
+        <div class="empty__art">🔍</div>
+        <p class="empty__title">Что смотрел?</p>
+        <p class="empty__text">Введи название — поищу в базах фильмов, сериалов и аниме.</p>
+      </div>
+      <div class="manual-add">
+        <button class="btn btn--ghost btn--block" id="btn-manual-add">
+          + Добавить вручную
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================= СТАТИСТИКА ======================= -->
+  <section class="screen" id="screen-stats" data-screen="stats" hidden>
+    <header class="topbar">
+      <div class="topbar__row"><h1 class="topbar__title">Статистика</h1></div>
+    </header>
+    <div class="screen__body" id="stats-body"></div>
+  </section>
+
+  <!-- ======================= НАСТРОЙКИ ======================= -->
+  <section class="screen" id="screen-settings" data-screen="settings" hidden>
+    <header class="topbar">
+      <div class="topbar__row"><h1 class="topbar__title">Настройки</h1></div>
+    </header>
+    <div class="screen__body">
+
+      <div class="card">
+        <h2 class="card__title">Данные</h2>
+        <p class="card__text" id="storage-info">—</p>
+        <div class="card__actions">
+          <button class="btn btn--primary btn--block" id="btn-export">Скачать резервную копию</button>
+          <button class="btn btn--ghost btn--block" id="btn-import">Загрузить из файла</button>
+          <input type="file" id="import-file" accept="application/json,.json" hidden>
+        </div>
+        <p class="card__note">Коллекция лежит в памяти браузера (localStorage + IndexedDB). Делай бэкап раз в пару недель — файл можно закинуть в облако или себе в мессенджер.</p>
+      </div>
+
+      <div class="card">
+        <h2 class="card__title">TMDB API-ключ <span class="badge badge--soft">необязательно</span></h2>
+        <p class="card__text">Без ключа поиск фильмов и сериалов работает через бесплатные базы (iTunes и TVmaze) — названия в основном английские. С ключом TMDB получишь русские названия, нормальные постеры и описания.</p>
+        <div class="field">
+          <input id="tmdb-key" class="field__input field__input--boxed" type="text"
+                 placeholder="Вставь ключ TMDB (v3 API Key)" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="card__actions">
+          <button class="btn btn--primary btn--block" id="btn-save-key">Сохранить ключ</button>
+          <button class="btn btn--ghost btn--block" id="btn-clear-key">Удалить ключ</button>
+        </div>
+        <p class="card__note">Где взять: themoviedb.org → регистрация → Settings → API → «API Key (v3 auth)». Бесплатно, 1 минута. Ключ хранится только на этом телефоне.</p>
+      </div>
+
+      <div class="card">
+        <h2 class="card__title">Язык результатов поиска</h2>
+        <label class="select select--block">
+          <span class="select__label">Язык (для TMDB)</span>
+          <select id="tmdb-lang">
+            <option value="ru-RU">Русский</option>
+            <option value="en-US">English</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="card card--danger">
+        <h2 class="card__title">Опасная зона</h2>
+        <button class="btn btn--danger btn--block" id="btn-wipe">Удалить всю коллекцию</button>
+      </div>
+
+      <p class="version">CollectMovie · локальный трекер · v1.0</p>
+    </div>
+  </section>
+
+  <!-- ======================= НИЖНЯЯ НАВИГАЦИЯ ======================= -->
+  <nav class="tabbar" id="tabbar">
+    <button class="tab is-active" data-goto="library">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4zM4 9h16M9 5v14"/></svg>
+      <span>Коллекция</span>
+    </button>
+    <button class="tab" data-goto="search">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4a7 7 0 1 1 0 14 7 7 0 0 1 0-14Zm9 16-4.35-4.35"/></svg>
+      <span>Поиск</span>
+    </button>
+    <button class="tab" data-goto="stats">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V10M12 20V4M19 20v-6"/></svg>
+      <span>Статистика</span>
+    </button>
+    <button class="tab" data-goto="settings">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/></svg>
+      <span>Настройки</span>
+    </button>
+  </nav>
+</div>
+
+<!-- ======================= МОДАЛКА КАРТОЧКИ ======================= -->
+<div class="sheet-backdrop" id="sheet-backdrop" hidden></div>
+<div class="sheet" id="sheet" hidden role="dialog" aria-modal="true" aria-label="Карточка">
+  <div class="sheet__grab" id="sheet-grab"></div>
+  <div class="sheet__body" id="sheet-body"></div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script type="module" src="assets/js/app.js"></script>
+</body>
+</html>

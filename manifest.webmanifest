@@ -1,0 +1,19 @@
+{
+  "name": "CollectMovie — трекер просмотренного",
+  "short_name": "CollectMovie",
+  "description": "Личный трекер фильмов, сериалов и аниме с оценками 1–10. Данные хранятся локально на телефоне.",
+  "lang": "ru",
+  "dir": "ltr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0e0d15",
+  "theme_color": "#0e0d15",
+  "categories": ["entertainment", "lifestyle", "utilities"],
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

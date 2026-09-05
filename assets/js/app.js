@@ -1,0 +1,550 @@
+/** Точка входа: маршрутизация между экранами, фильтры, поиск, шторка, настройки. */
+
+import * as store from './store.js';
+import { search as searchProviders } from './providers.js';
+import {
+  $, $$, itemCard, detailSheet, manualSheet, statsView, toast,
+} from './ui.js';
+
+/* -------------------------------- состояние ------------------------------- */
+
+const libFilters = { query: '', type: 'all', status: 'all', sort: 'added_desc' };
+const searchState = { query: '', type: 'all', results: [], seq: 0 };
+
+let sheetDraft = null;      // { item, saved, status, rating, note, isManual }
+
+/* ------------------------------ маршрутизация ----------------------------- */
+
+function goto(name) {
+  $$('.screen').forEach((s) => { s.hidden = s.dataset.screen !== name; });
+  $$('.tab').forEach((t) => t.classList.toggle('is-active', t.dataset.goto === name));
+  window.scrollTo(0, 0);
+  if (name === 'stats')    renderStats();
+  if (name === 'settings') refreshStorageInfo();
+  if (name === 'search')   setTimeout(() => $('#search-input').focus(), 120);
+  // replaceState, а не location.hash: иначе каждая вкладка плодит запись в истории
+  try { history.replaceState(history.state, '', name === 'library' ? '#' : `#${name}`); }
+  catch { /* приватный режим */ }
+}
+
+/* -------------------------------- библиотека ------------------------------ */
+
+function filteredLibrary() {
+  const q = libFilters.query.trim().toLowerCase();
+
+  const items = store.all().filter((i) => {
+    if (libFilters.type   !== 'all' && i.type   !== libFilters.type)   return false;
+    if (libFilters.status !== 'all' && i.status !== libFilters.status) return false;
+    if (!q) return true;
+    return i.title.toLowerCase().includes(q)
+        || (i.originalTitle || '').toLowerCase().includes(q)
+        || (i.note || '').toLowerCase().includes(q);
+  });
+
+  const byDate  = (a, b, dir) => dir * (new Date(a.addedAt) - new Date(b.addedAt));
+  const sorters = {
+    added_desc:  (a, b) => byDate(a, b, -1),
+    added_asc:   (a, b) => byDate(a, b, 1),
+    // Записи без оценки всегда в конце — независимо от направления.
+    rating_desc: (a, b) => (b.rating ?? -1) - (a.rating ?? -1),
+    rating_asc:  (a, b) => (a.rating ?? 99) - (b.rating ?? 99),
+    title_asc:   (a, b) => a.title.localeCompare(b.title, 'ru'),
+    year_desc:   (a, b) => (b.year ?? 0) - (a.year ?? 0),
+  };
+
+  return items.sort(sorters[libFilters.sort] || sorters.added_desc);
+}
+
+function renderLibrary() {
+  const items = filteredLibrary();
+  const list  = $('#lib-list');
+  const empty = $('#lib-empty');
+
+  $('#lib-count').textContent = store.all().length;
+
+  if (!items.length) {
+    list.innerHTML = '';
+    empty.hidden = false;
+    const hasAny = store.all().length > 0;
+    $('.empty__title', empty).textContent = hasAny ? 'Ничего не нашлось' : 'Пока пусто';
+    $('.empty__text', empty).textContent = hasAny
+      ? 'Попробуй сбросить фильтры или изменить запрос.'
+      : 'Найди фильм, сериал или аниме на вкладке «Поиск» и добавь в коллекцию.';
+    $('.btn', empty).hidden = hasAny;
+    return;
+  }
+
+  empty.hidden = true;
+  list.innerHTML = items.map((i) => itemCard(i, 'library')).join('');
+}
+
+/* --------------------------------- поиск ---------------------------------- */
+
+let searchTimer = null;
+
+function scheduleSearch() {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(runSearch, 420);
+}
+
+async function runSearch() {
+  const q = searchState.query.trim();
+  const list   = $('#search-list');
+  const idle   = $('#search-idle');
+  const status = $('#search-status');
+
+  if (q.length < 2) {
+    list.innerHTML = '';
+    status.hidden = true;
+    idle.hidden = false;
+    return;
+  }
+
+  idle.hidden = true;
+  status.hidden = false;
+  status.className = 'hint';
+  status.innerHTML = '<span class="spinner"></span>Ищу…';
+
+  const seq = ++searchState.seq;
+  let payload;
+  try {
+    payload = await searchProviders(q, searchState.type, store.getPrefs());
+  } catch (err) {
+    if (seq !== searchState.seq) return;
+    status.className = 'hint hint--error';
+    status.textContent = `Не получилось: ${err.message}`;
+    return;
+  }
+  if (seq !== searchState.seq) return;   // пришёл ответ на устаревший запрос
+
+  searchState.results = payload.results;
+
+  if (!payload.results.length) {
+    list.innerHTML = '';
+    status.className = 'hint';
+    status.textContent = payload.warnings.length
+      ? `Ничего не нашлось. Источники ответили с ошибкой: ${payload.warnings.join('; ')}`
+      : 'Ничего не нашлось. Можно добавить вручную — кнопка внизу.';
+    return;
+  }
+
+  status.hidden = !payload.warnings.length;
+  if (payload.warnings.length) {
+    status.className = 'hint';
+    status.textContent = `Часть источников не ответила (${payload.warnings.join('; ')}) — показываю остальное.`;
+  }
+
+  list.innerHTML = payload.results
+    .map((r) => itemCard(r, 'search', store.get(r.id)))
+    .join('');
+}
+
+/* --------------------------------- шторка --------------------------------- */
+
+function openSheet(html) {
+  $('#sheet-body').innerHTML = html;
+  $('#sheet').hidden = false;
+  $('#sheet-backdrop').hidden = false;
+  document.body.style.overflow = 'hidden';
+  // Отдельная запись в истории, чтобы системная «Назад» закрывала шторку.
+  try { history.pushState({ cmSheet: true }, ''); } catch { /* приватный режим */ }
+}
+
+/** @param {boolean} fromHistory — вызов пришёл из popstate, назад ходить не надо */
+function closeSheet(fromHistory = false) {
+  if ($('#sheet').hidden) return;
+  $('#sheet').hidden = true;
+  $('#sheet-backdrop').hidden = true;
+  $('#sheet-body').innerHTML = '';
+  document.body.style.overflow = '';
+  sheetDraft = null;
+  if (!fromHistory && history.state?.cmSheet) {
+    try { history.back(); } catch { /* приватный режим */ }
+  }
+}
+
+/** Открывает карточку записи — из коллекции или из выдачи поиска. */
+function openDetail(id) {
+  const saved = store.get(id);
+  const found = saved || searchState.results.find((r) => r.id === id);
+  if (!found) return;
+
+  // Для новой записи ставим разумные значения по умолчанию.
+  const item = saved ? { ...found } : { ...found, status: 'watched', rating: null, note: '' };
+
+  sheetDraft = {
+    item,
+    saved: Boolean(saved),
+    status: item.status,
+    rating: item.rating,
+    note:   item.note || '',
+    isManual: false,
+  };
+
+  openSheet(detailSheet(item, { saved: Boolean(saved) }));
+}
+
+function openManual() {
+  sheetDraft = { item: null, saved: false, status: 'watched', rating: null, note: '', isManual: true, type: 'movie' };
+  openSheet(manualSheet());
+}
+
+/** Одна обработка кликов на всю шторку — проще, чем вешать листенеры на каждый узел. */
+function onSheetClick(event) {
+  const target = event.target.closest('button');
+  if (!target || !sheetDraft) return;
+
+  // --- оценка ---
+  if (target.dataset.rate) {
+    const value = Number(target.dataset.rate);
+    sheetDraft.rating = sheetDraft.rating === value ? null : value;   // повторный тап снимает
+    $$('[data-rate]').forEach((b) =>
+      b.classList.toggle('is-active', Number(b.dataset.rate) === sheetDraft.rating));
+    const label = target.closest('.group')?.querySelector('.group__label');
+    if (label && !sheetDraft.isManual) {
+      label.textContent = sheetDraft.rating ? `Оценка — ${sheetDraft.rating}/10` : 'Оценка';
+    }
+    return;
+  }
+
+  if (target.id === 'd-rate-clear' || target.id === 'm-rate-clear') {
+    sheetDraft.rating = null;
+    $$('[data-rate]').forEach((b) => b.classList.remove('is-active'));
+    return;
+  }
+
+  // --- статус ---
+  if (target.dataset.status) {
+    sheetDraft.status = target.dataset.status;
+    $$('#d-status .seg__btn, #m-status .seg__btn').forEach((b) =>
+      b.classList.toggle('is-active', b.dataset.status === sheetDraft.status));
+    return;
+  }
+
+  // --- тип (только ручное добавление) ---
+  if (target.dataset.mtype) {
+    sheetDraft.type = target.dataset.mtype;
+    $$('#m-type .seg__btn').forEach((b) =>
+      b.classList.toggle('is-active', b.dataset.mtype === sheetDraft.type));
+    return;
+  }
+
+  if (target.id === 'd-more') {
+    $('#d-overview').classList.remove('detail__overview--clamp');
+    target.remove();
+    return;
+  }
+
+  if (target.id === 'd-close') { closeSheet(); return; }
+
+  if (target.id === 'd-save')   { saveFromSheet(); return; }
+  if (target.id === 'm-save')   { saveManual();    return; }
+  if (target.id === 'd-delete') { deleteFromSheet(); return; }
+}
+
+function saveFromSheet() {
+  const note = $('#d-note')?.value.trim() ?? '';
+  const wasSaved = sheetDraft.saved;
+
+  store.upsert({
+    ...sheetDraft.item,
+    status: sheetDraft.status,
+    rating: sheetDraft.rating,
+    note,
+  });
+
+  closeSheet();
+  renderLibrary();
+  runSearchRefresh();
+  toast(wasSaved ? 'Сохранено' : 'Добавлено в коллекцию');
+}
+
+function saveManual() {
+  const title = $('#m-title').value.trim();
+  if (!title) { toast('Впиши название', 'error'); return; }
+
+  const yearRaw = parseInt($('#m-year').value, 10);
+  const year = Number.isFinite(yearRaw) && yearRaw > 1870 && yearRaw < 2100 ? yearRaw : null;
+
+  store.upsert({
+    id:     `manual-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    type:   sheetDraft.type,
+    title,
+    year,
+    source: 'manual',
+    status: sheetDraft.status,
+    rating: sheetDraft.rating,
+    note:   $('#m-note').value.trim(),
+  });
+
+  closeSheet();
+  renderLibrary();
+  goto('library');
+  toast('Добавлено вручную');
+}
+
+function deleteFromSheet() {
+  if (!confirm(`Удалить «${sheetDraft.item.title}» из коллекции?`)) return;
+  store.remove(sheetDraft.item.id);
+  closeSheet();
+  renderLibrary();
+  runSearchRefresh();
+  toast('Удалено');
+}
+
+/** Перерисовывает галочки «уже в коллекции» в открытой выдаче поиска. */
+function runSearchRefresh() {
+  if ($('#screen-search').hidden || !searchState.results.length) return;
+  $('#search-list').innerHTML = searchState.results
+    .map((r) => itemCard(r, 'search', store.get(r.id)))
+    .join('');
+}
+
+/* ------------------------------- статистика ------------------------------- */
+
+function renderStats() {
+  $('#stats-body').innerHTML = statsView(store.all());
+}
+
+/* -------------------------------- настройки ------------------------------- */
+
+/** «1 запись», «2 записи», «5 записей». */
+function plural(n, one, few, many) {
+  const mod100 = n % 100;
+  const mod10 = n % 10;
+  if (mod100 >= 11 && mod100 <= 14) return many;
+  if (mod10 === 1) return one;
+  if (mod10 >= 2 && mod10 <= 4) return few;
+  return many;
+}
+
+async function refreshStorageInfo() {
+  const { bytes, quota, persisted, count } = await store.usage();
+  const kb = (bytes / 1024).toFixed(1);
+  const quotaText = quota ? `, доступно ~${(quota / 1024 / 1024).toFixed(0)} МБ` : '';
+  const persistText = persisted
+    ? 'Браузер пометил данные как защищённые от автоочистки.'
+    : 'Совет: добавь приложение на главный экран — так браузер не удалит данные при чистке кэша.';
+  $('#storage-info').textContent =
+    `${count} ${plural(count, 'запись', 'записи', 'записей')}, ${kb} КБ${quotaText}. ${persistText}`;
+}
+
+function exportBackup() {
+  const blob = new Blob([store.exportJSON()], { type: 'application/json' });
+  const url  = URL.createObjectURL(blob);
+  const stamp = new Date().toISOString().slice(0, 10);
+
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `collectmovie-${stamp}.json`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+  toast('Файл бэкапа готов');
+}
+
+function importBackup(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    const replace = confirm(
+      'OK — заменить коллекцию содержимым файла.\n' +
+      'Отмена — добавить записи из файла к текущим (ничего не потеряется).');
+    try {
+      const res = store.importJSON(String(reader.result), replace ? 'replace' : 'merge');
+      renderLibrary();
+      refreshStorageInfo();
+      toast(`Готово: +${res.added}, обновлено ${res.updated}, всего ${res.total}`);
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  };
+  reader.onerror = () => toast('Не смог прочитать файл', 'error');
+  reader.readAsText(file);
+}
+
+/* ------------------------------ инициализация ----------------------------- */
+
+function wireLibrary() {
+  const input = $('#lib-search');
+  input.addEventListener('input', () => {
+    libFilters.query = input.value;
+    $('#lib-search-clear').hidden = !input.value;
+    renderLibrary();
+  });
+  $('#lib-search-clear').addEventListener('click', () => {
+    input.value = '';
+    libFilters.query = '';
+    $('#lib-search-clear').hidden = true;
+    renderLibrary();
+  });
+
+  $('#lib-type-chips').addEventListener('click', (e) => {
+    const chip = e.target.closest('.chip');
+    if (!chip) return;
+    libFilters.type = chip.dataset.type;
+    $$('#lib-type-chips .chip').forEach((c) => c.classList.toggle('is-active', c === chip));
+    renderLibrary();
+  });
+
+  $('#lib-status-chips').addEventListener('click', (e) => {
+    const chip = e.target.closest('.chip');
+    if (!chip) return;
+    libFilters.status = chip.dataset.status;
+    $$('#lib-status-chips .chip').forEach((c) => c.classList.toggle('is-active', c === chip));
+    renderLibrary();
+  });
+
+  $('#lib-sort').addEventListener('change', (e) => {
+    libFilters.sort = e.target.value;
+    renderLibrary();
+  });
+
+  $('#lib-list').addEventListener('click', (e) => {
+    const card = e.target.closest('.item');
+    if (card) openDetail(card.dataset.id);
+  });
+}
+
+function wireSearch() {
+  const input = $('#search-input');
+  input.addEventListener('input', () => {
+    searchState.query = input.value;
+    $('#search-clear').hidden = !input.value;
+    scheduleSearch();
+  });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); input.blur(); clearTimeout(searchTimer); runSearch(); }
+  });
+
+  $('#search-clear').addEventListener('click', () => {
+    input.value = '';
+    searchState.query = '';
+    searchState.results = [];
+    $('#search-clear').hidden = true;
+    runSearch();
+    input.focus();
+  });
+
+  $('#search-type-chips').addEventListener('click', (e) => {
+    const chip = e.target.closest('.chip');
+    if (!chip) return;
+    searchState.type = chip.dataset.type;
+    $$('#search-type-chips .chip').forEach((c) => c.classList.toggle('is-active', c === chip));
+    clearTimeout(searchTimer);
+    runSearch();
+  });
+
+  $('#search-list').addEventListener('click', (e) => {
+    const card = e.target.closest('.item');
+    if (card) openDetail(card.dataset.id);
+  });
+
+  $('#btn-manual-add').addEventListener('click', openManual);
+}
+
+function wireSettings() {
+  const prefs = store.getPrefs();
+  $('#tmdb-key').value = prefs.tmdbKey || '';
+  $('#tmdb-lang').value = prefs.lang || 'ru-RU';
+
+  $('#btn-save-key').addEventListener('click', () => {
+    store.setPrefs({ tmdbKey: $('#tmdb-key').value.trim() });
+    toast($('#tmdb-key').value.trim() ? 'Ключ сохранён' : 'Ключ очищен');
+  });
+
+  $('#btn-clear-key').addEventListener('click', () => {
+    $('#tmdb-key').value = '';
+    store.setPrefs({ tmdbKey: '' });
+    toast('Ключ удалён — поиск снова через бесплатные базы');
+  });
+
+  $('#tmdb-lang').addEventListener('change', (e) => {
+    store.setPrefs({ lang: e.target.value });
+    toast('Язык поиска обновлён');
+  });
+
+  $('#btn-export').addEventListener('click', exportBackup);
+  $('#btn-import').addEventListener('click', () => $('#import-file').click());
+  $('#import-file').addEventListener('change', (e) => {
+    const file = e.target.files?.[0];
+    if (file) importBackup(file);
+    e.target.value = '';
+  });
+
+  $('#btn-wipe').addEventListener('click', () => {
+    if (!confirm('Удалить ВСЮ коллекцию без возможности отката?\nСначала лучше скачать бэкап.')) return;
+    if (!confirm('Точно? Это последний вопрос.')) return;
+    store.wipe();
+    renderLibrary();
+    refreshStorageInfo();
+    toast('Коллекция очищена');
+  });
+}
+
+function wireGlobal() {
+  $('#tabbar').addEventListener('click', (e) => {
+    const tab = e.target.closest('.tab');
+    if (tab) goto(tab.dataset.goto);
+  });
+
+  document.addEventListener('click', (e) => {
+    const jump = e.target.closest('[data-goto]:not(.tab)');
+    if (jump) goto(jump.dataset.goto);
+  });
+
+  $('#sheet-body').addEventListener('click', onSheetClick);
+  $('#sheet-backdrop').addEventListener('click', () => closeSheet());
+  $('#sheet-grab').addEventListener('click', () => closeSheet());
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeSheet();
+  });
+
+  // Свайп вниз по «ручке» закрывает шторку.
+  let dragStart = null;
+  const grab = $('#sheet-grab');
+  grab.addEventListener('touchstart', (e) => { dragStart = e.touches[0].clientY; }, { passive: true });
+  grab.addEventListener('touchmove', (e) => {
+    if (dragStart != null && e.touches[0].clientY - dragStart > 60) { dragStart = null; closeSheet(); }
+  }, { passive: true });
+  grab.addEventListener('touchend', () => { dragStart = null; });
+
+  // Битые постеры заменяем эмодзи-заглушкой.
+  document.addEventListener('error', (e) => {
+    const img = e.target;
+    if (!(img instanceof HTMLImageElement)) return;
+    const isDetail = img.classList.contains('detail__poster');
+    if (!isDetail && !img.classList.contains('item__poster')) return;
+    const ph = document.createElement('div');
+    ph.className = isDetail ? 'detail__poster detail__poster--ph' : 'item__poster item__poster--ph';
+    ph.textContent = '🎬';
+    img.replaceWith(ph);
+  }, true);
+
+  window.addEventListener('store:error', (e) => toast(e.detail, 'error'));
+
+  window.addEventListener('popstate', () => {
+    if (!$('#sheet').hidden) closeSheet(true);
+  });
+}
+
+async function init() {
+  await store.load();
+
+  wireGlobal();
+  wireLibrary();
+  wireSearch();
+  wireSettings();
+
+  renderLibrary();
+
+  const start = location.hash.replace('#', '');
+  goto(['search', 'stats', 'settings'].includes(start) ? start : 'library');
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('sw.js').catch(() => { /* офлайн-режим необязателен */ });
+  }
+}
+
+init();

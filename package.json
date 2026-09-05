@@ -1,0 +1,15 @@
+{
+  "name": "collectmovie",
+  "version": "1.0.0",
+  "description": "Личный трекер фильмов, сериалов и аниме с локальным хранением",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "http-server -p 8080 -c-1",
+    "test": "node tests/e2e.mjs"
+  },
+  "devDependencies": {
+    "http-server": "^14.1.1",
+    "playwright": "^1.56.1"
+  }
+}
