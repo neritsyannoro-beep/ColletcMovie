@@ -510,7 +510,7 @@ function wireGlobal() {
   }, { passive: true });
   grab.addEventListener('touchend', () => { dragStart = null; });
 
-  // Битые постеры заменяем эмодзи-заглушкой.
+  // Постер не загрузился — подставляем ту же обложку-монограмму.
   document.addEventListener('error', (e) => {
     const img = e.target;
     if (!(img instanceof HTMLImageElement)) return;
@@ -518,7 +518,8 @@ function wireGlobal() {
     if (!isDetail && !img.classList.contains('item__poster')) return;
     const ph = document.createElement('div');
     ph.className = isDetail ? 'detail__poster detail__poster--ph' : 'item__poster item__poster--ph';
-    ph.textContent = '🎬';
+    ph.style.background = img.dataset.bg || '';
+    ph.textContent = img.dataset.letter || '?';
     img.replaceWith(ph);
   }, true);
 

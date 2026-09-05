@@ -6,12 +6,6 @@ export const TYPE_LABEL = {
   anime:  'Аниме',
 };
 
-export const TYPE_EMOJI = {
-  movie:  '🎬',
-  series: '📺',
-  anime:  '🌸',
-};
-
 export const STATUS_LABEL = {
   watched:  'Просмотрено',
   watching: 'Смотрю',
@@ -36,11 +30,32 @@ function scoreClass(rating) {
   return 'score';
 }
 
+/**
+ * Заглушка вместо постера — обложка с первой буквой названия.
+ * Цвет выводится из самого названия, поэтому у каждого тайтла он свой
+ * и не меняется от запуска к запуску.
+ */
+export function monogram(title = '') {
+  let hash = 0;
+  for (let i = 0; i < title.length; i++) hash = ((hash << 5) - hash + title.charCodeAt(i)) | 0;
+
+  // Шаг золотого сечения разводит соседние хеши по всему кругу оттенков —
+  // без него кириллица кучкуется в одном цвете и все обложки выходят похожими.
+  const hue = Math.round((Math.abs(hash % 997) * 137.508) % 360);
+  const letter = (title.trim()[0] || '?').toUpperCase();
+  const bg = `linear-gradient(150deg, hsl(${hue}, 44%, 33%), hsl(${(hue + 40) % 360}, 48%, 18%))`;
+  return { letter, bg };
+}
+
 function posterHTML(item, cls, phCls) {
+  const { letter, bg } = monogram(item.title || '');
   if (item.poster) {
-    return `<img class="${cls}" src="${escapeHTML(item.poster)}" alt="" loading="lazy" decoding="async">`;
+    // data-* нужны обработчику ошибок: если картинка не загрузится,
+    // он соберёт из них ту же самую заглушку.
+    return `<img class="${cls}" src="${escapeHTML(item.poster)}" alt="" loading="lazy" decoding="async"
+                 data-letter="${escapeHTML(letter)}" data-bg="${escapeHTML(bg)}">`;
   }
-  return `<div class="${cls} ${phCls}">${TYPE_EMOJI[item.type] || '🎬'}</div>`;
+  return `<div class="${cls} ${phCls}" style="background:${bg}">${escapeHTML(letter)}</div>`;
 }
 
 /**
