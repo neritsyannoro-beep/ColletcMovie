@@ -80,7 +80,7 @@ function parse(raw) {
 /* --------------------------------- Состояние ------------------------------ */
 
 let state = { version: 1, items: [], updatedAt: null };
-let prefs = { tmdbKey: '', lang: 'ru-RU' };
+let prefs = { tmdbKey: '', lang: 'ru-RU', lastBackupAt: null };
 
 /** Загружает коллекцию. Выбирает самый полный из доступных источников. */
 export async function load() {

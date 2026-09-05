@@ -181,6 +181,16 @@ await page.locator('#btn-save-key').click();
 const savedKey = await page.evaluate(() => JSON.parse(localStorage.getItem('collectmovie:prefs')||'{}').tmdbKey);
 ok('ключ TMDB сохранён', savedKey === 'TESTKEY123', String(savedKey));
 
+// ---- 13b. напоминание о бэкапе ----
+await page.locator('.tab[data-goto="library"]').click();
+ok('напоминание о бэкапе видно, пока копии нет',
+   !(await page.locator('#backup-nudge').isHidden()));
+ok('в напоминании сказано, сколько записей под угрозой',
+   /живут только на этом телефоне/.test(await page.locator('#nudge-sub').textContent()));
+await page.locator('.tab[data-goto="settings"]').click();
+ok('в настройках видно, что копии не было',
+   /ни разу/.test(await page.locator('#backup-info').textContent()));
+
 // ---- 14. экспорт ----
 const [ download ] = await Promise.all([
   page.waitForEvent('download', { timeout: 5000 }).catch(()=>null),
@@ -188,6 +198,14 @@ const [ download ] = await Promise.all([
 ]);
 ok('экспорт отдаёт файл', !!download && /collectmovie-\d{4}-\d{2}-\d{2}\.json/.test(download.suggestedFilename()),
    download ? download.suggestedFilename() : 'нет download');
+
+ok('после экспорта записана дата',
+   await page.evaluate(() => !!JSON.parse(localStorage.getItem('collectmovie:prefs')||'{}').lastBackupAt));
+ok('в настройках дата обновилась',
+   /сегодня/.test(await page.locator('#backup-info').textContent()),
+   await page.locator('#backup-info').textContent());
+await page.locator('.tab[data-goto="library"]').click();
+ok('напоминание пропало после бэкапа', await page.locator('#backup-nudge').isHidden());
 
 // ---- 15. ветка TMDB ----
 await page.route('**/api.themoviedb.org/3/genre/**', r => r.fulfill({ contentType:'application/json',

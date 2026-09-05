@@ -61,6 +61,7 @@ function renderLibrary() {
   const empty = $('#lib-empty');
 
   $('#lib-count').textContent = store.all().length;
+  renderBackupNudge();
 
   if (!items.length) {
     list.innerHTML = '';
@@ -327,6 +328,7 @@ function plural(n, one, few, many) {
 }
 
 async function refreshStorageInfo() {
+  refreshBackupInfo();
   const { bytes, quota, persisted, count } = await store.usage();
   const kb = (bytes / 1024).toFixed(1);
   const quotaText = quota ? `, доступно ~${(quota / 1024 / 1024).toFixed(0)} МБ` : '';
@@ -337,19 +339,87 @@ async function refreshStorageInfo() {
     `${count} ${plural(count, 'запись', 'записи', 'записей')}, ${kb} КБ${quotaText}. ${persistText}`;
 }
 
-function exportBackup() {
-  const blob = new Blob([store.exportJSON()], { type: 'application/json' });
-  const url  = URL.createObjectURL(blob);
-  const stamp = new Date().toISOString().slice(0, 10);
+const DAY = 24 * 60 * 60 * 1000;
+const BACKUP_REMIND_AFTER = 14 * DAY;
 
+/**
+ * Сохраняет бэкап.
+ *
+ * На айфоне ссылка с download в установленном приложении часто не скачивает
+ * файл, а открывает его во вкладке — поэтому сначала пробуем системное
+ * «Поделиться»: оттуда файл кладётся в «Файлы», iCloud или мессенджер.
+ * Обычная ссылка остаётся запасным путём для десктопа и Android.
+ */
+async function exportBackup() {
+  const json  = store.exportJSON();
+  const stamp = new Date().toISOString().slice(0, 10);
+  const name  = `collectmovie-${stamp}.json`;
+
+  const file = new File([json], name, { type: 'application/json' });
+  if (navigator.canShare?.({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file], title: 'Резервная копия CollectMovie' });
+      markBackedUp('Копия сохранена');
+      return;
+    } catch (err) {
+      // Пользователь закрыл шторку — это не ошибка и бэкапом не считается.
+      if (err?.name === 'AbortError') return;
+      // Всё остальное — пробуем обычную ссылку.
+    }
+  }
+
+  const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
   const link = document.createElement('a');
   link.href = url;
-  link.download = `collectmovie-${stamp}.json`;
+  link.download = name;
   document.body.appendChild(link);
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 4000);
-  toast('Файл бэкапа готов');
+  markBackedUp('Файл бэкапа готов');
+}
+
+function markBackedUp(message) {
+  store.setPrefs({ lastBackupAt: new Date().toISOString() });
+  renderBackupNudge();
+  refreshBackupInfo();
+  toast(message);
+}
+
+/** Форматирует «сегодня / 3 дня назад / 12.08.2026». */
+function agoText(iso) {
+  const days = Math.floor((Date.now() - new Date(iso)) / DAY);
+  if (days <= 0) return 'сегодня';
+  if (days === 1) return 'вчера';
+  if (days < 30) return `${days} ${plural(days, 'день', 'дня', 'дней')} назад`;
+  return new Date(iso).toLocaleDateString('ru-RU');
+}
+
+/** Напоминание в библиотеке: копии нет вообще или она давно устарела. */
+function renderBackupNudge() {
+  const nudge = $('#backup-nudge');
+  const count = store.all().length;
+  const { lastBackupAt } = store.getPrefs();
+
+  if (!count) { nudge.hidden = true; return; }
+
+  const stale = !lastBackupAt || (Date.now() - new Date(lastBackupAt)) > BACKUP_REMIND_AFTER;
+  nudge.hidden = !stale;
+  if (!stale) return;
+
+  $('#nudge-title').textContent = lastBackupAt
+    ? 'Резервная копия устарела'
+    : 'Коллекция без резервной копии';
+  $('#nudge-sub').textContent = lastBackupAt
+    ? `Последняя — ${agoText(lastBackupAt)}. Смени телефон — потеряешь всё после неё.`
+    : `${count} ${plural(count, 'запись', 'записи', 'записей')} живут только на этом телефоне.`;
+}
+
+function refreshBackupInfo() {
+  const { lastBackupAt } = store.getPrefs();
+  $('#backup-info').textContent = lastBackupAt
+    ? `Последняя резервная копия — ${agoText(lastBackupAt)}.`
+    : 'Резервную копию ещё ни разу не делали.';
 }
 
 function importBackup(file) {
@@ -473,6 +543,7 @@ function wireSettings() {
   });
 
   $('#btn-export').addEventListener('click', exportBackup);
+  $('#nudge-btn').addEventListener('click', exportBackup);
   $('#btn-import').addEventListener('click', () => $('#import-file').click());
   $('#import-file').addEventListener('change', (e) => {
     const file = e.target.files?.[0];

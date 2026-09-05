@@ -60,6 +60,13 @@
     </header>
 
     <div class="screen__body">
+      <div id="backup-nudge" class="nudge" hidden>
+        <div class="nudge__text">
+          <strong id="nudge-title">Коллекция без резервной копии</strong>
+          <span id="nudge-sub"></span>
+        </div>
+        <button class="btn btn--sm btn--primary" id="nudge-btn">Сохранить</button>
+      </div>
       <div id="lib-list" class="list"></div>
       <div id="lib-empty" class="empty" hidden>
         <div class="empty__art">🎬</div>
@@ -131,8 +138,9 @@
       <div class="card">
         <h2 class="card__title">Данные</h2>
         <p class="card__text" id="storage-info">—</p>
+        <p class="card__text" id="backup-info">—</p>
         <div class="card__actions">
-          <button class="btn btn--primary btn--block" id="btn-export">Скачать резервную копию</button>
+          <button class="btn btn--primary btn--block" id="btn-export">Сохранить резервную копию</button>
           <button class="btn btn--ghost btn--block" id="btn-import">Загрузить из файла</button>
           <input type="file" id="import-file" accept="application/json,.json" hidden>
         </div>

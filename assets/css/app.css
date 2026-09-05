@@ -225,6 +225,20 @@ body::before {
 
 /* ============================ СПИСОК КАРТОЧЕК ============================ */
 
+.nudge {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  border-radius: var(--r-md);
+  background: rgba(255, 181, 69, .1);
+  border: 1px solid rgba(255, 181, 69, .3);
+}
+.nudge[hidden] { display: none; }
+.nudge__text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.nudge__text strong { font-size: 13.5px; color: var(--warn); }
+.nudge__text span { font-size: 12px; color: var(--text-dim); }
+.nudge .btn { flex: 0 0 auto; }
+
 .list { display: flex; flex-direction: column; gap: 10px; }
 
 .item {
