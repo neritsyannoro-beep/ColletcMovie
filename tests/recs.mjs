@@ -20,9 +20,16 @@ await p.route('**/api.themoviedb.org/3/genre/**', r => r.fulfill({ contentType:'
 
 const rec = (id,title,year,pop) => ({ id, title, name:title, release_date:`${year}-01-01`,
   first_air_date:`${year}-01-01`, poster_path:'/p.jpg', overview:'Описание.', genre_ids:[18],
-  original_language:'en', popularity:pop });
+  original_language:'en', popularity:pop, vote_average:8.24, vote_count:4200 });
 
 // «Морпехи» (id 100) советуют Оно и Взвод; «Начало» (id 200) советует Оно тоже
+// page=2 и similar отдаём пустыми — проверяем именно основную выдачу
+const emptyPage = r => r.fulfill({ contentType:'application/json', body: JSON.stringify({ results:[] })});
+await p.route(u => /\/movie\/\d+\/(recommendations|similar)/.test(u.pathname)
+                  && (u.searchParams.get('page') === '2' || u.pathname.endsWith('/similar')), emptyPage);
+await p.route(u => /\/tv\/\d+\/(recommendations|similar)/.test(u.pathname)
+                  && (u.searchParams.get('page') === '2' || u.pathname.endsWith('/similar')), emptyPage);
+
 await p.route('**/api.themoviedb.org/3/movie/100/recommendations**', r => r.fulfill({
   contentType:'application/json', body: JSON.stringify({ results:[rec(11,'Цельнометаллическая оболочка',1987,50), rec(12,'Взвод',1986,40)] })}));
 await p.route('**/api.themoviedb.org/3/movie/200/recommendations**', r => r.fulfill({
@@ -80,6 +87,29 @@ await p.waitForSelector('#recs-list .item', { timeout: 15000 });
 const s3 = await p.locator('#recs-list .item__title').allTextContents();
 ok('советы по аниме идут из Jikan', s3.some(t=>t.includes('Naruto Shippuden')), s3.join(' | '));
 
+// --- возврат на прежнюю вкладку показывает её же подборку ---
+await p.locator('#recs-type-chips .chip[data-type="movie"]').click();
+await p.waitForSelector('#recs-list .item', { timeout: 15000 });
+const back = await p.locator('#recs-list .item__title').allTextContents();
+ok('вернулись к фильмам — видим фильмы, а не аниме',
+   back.some(t=>t.includes('Цельнометаллическая')) && !back.some(t=>t.includes('Naruto')),
+   back.join(' | '));
+await p.locator('#recs-type-chips .chip[data-type="anime"]').click();
+await p.waitForSelector('#recs-list .item', { timeout: 15000 });
+
+// --- оценка догружается в шторке, если её не было в списке ---
+await p.route('**/api.jikan.moe/v4/anime/1735', r => r.fulfill({ contentType:'application/json',
+  body: JSON.stringify({ data:{ score: 8.65, scored_by: 1500000, episodes: 500,
+    genres:[{name:'Экшен'}], synopsis:'Наруто взрослеет.' } })}));
+await p.locator('#recs-list .item').first().click();
+await p.waitForSelector('#sheet:not([hidden])');
+await p.waitForSelector('#d-vote .badge--vote', { timeout: 15000 });
+const sheetVote = await p.locator('#d-vote').innerText();
+ok('оценка MyAnimeList догрузилась в карточке', /8\.65/.test(sheetVote), sheetVote.replace(/\n/g,' '));
+ok('источник оценки подписан как MAL', /MAL/.test(sheetVote), sheetVote.replace(/\n/g,' '));
+await p.locator('#d-close').click();
+await p.waitForSelector('#sheet', { state:'hidden' });
+
 // --- добавление из советов -> «В планах» ---
 await p.locator('#recs-list .item').first().click();
 await p.waitForSelector('#sheet:not([hidden])');
@@ -91,6 +121,35 @@ ok('появилась галочка «уже в коллекции»',
    (await p.locator('#recs-list .item__add.is-in').count()) === 1);
 ok('служебное поле because не сохранилось',
    await p.evaluate(() => !JSON.parse(localStorage.getItem('collectmovie:v1')).items.some(i=>'because' in i)));
+
+// --- оценка базы видна в карточке и в шторке ---
+await p.locator('#recs-type-chips .chip[data-type="movie"]').click();
+await p.waitForSelector('#recs-list .item', { timeout: 15000 });
+const voteText = await p.locator('#recs-list .badge--vote').first().innerText();
+ok('оценка TMDB видна в списке', /8\.2/.test(voteText), voteText.replace(/\n/g,' '));
+ok('подписано, чья оценка', /TMDB/.test(voteText), voteText.replace(/\n/g,' '));
+
+// --- обновление даёт другой набор источников ---
+await p.evaluate(async () => {
+  const s = await import('./assets/js/store.js');
+  // Двадцать оценённых фильмов, чтобы было из чего выбирать
+  for (let i = 0; i < 20; i++) {
+    s.upsert({ id:'tmdb-movie-9'+i, type:'movie', title:'Фильм '+i, year:2000+i,
+               rating: 10 - (i % 3), status:'watched', source:'tmdb', sourceId: 900+i });
+  }
+});
+const seedsSeen = await p.evaluate(async () => {
+  const recs = await import('./assets/js/recs.js');
+  const store = await import('./assets/js/store.js');
+  const rounds = [];
+  for (const round of [0, 1, 2]) {
+    const res = await recs.recommend('movie', store.getPrefs(), { force: true, round });
+    rounds.push(res.seeds.map(s => s.id).sort().join(','));
+  }
+  return rounds;
+});
+ok('каждое обновление берёт другой срез коллекции',
+   new Set(seedsSeen).size === 3, seedsSeen.map(s=>s.slice(0,40)).join('  ||  '));
 
 // --- пустое состояние без ключа ---
 await p.evaluate(() => localStorage.setItem('collectmovie:prefs', JSON.stringify({ tmdbKey:'', lang:'ru-RU' })));

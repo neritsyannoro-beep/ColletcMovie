@@ -133,6 +133,8 @@ function mapTMDB(r, kind, genres) {
     source:        'tmdb',
     sourceId:      r.id,
     popularity:    r.popularity || 0,
+    voteAverage:   r.vote_average ? Math.round(r.vote_average * 10) / 10 : null,
+    voteCount:     r.vote_count || 0,
   };
 }
 
@@ -154,15 +156,48 @@ async function searchTMDB(query, kind, { key, lang }) {
   return (data.results || []).map((r) => mapTMDB(r, kind, genres));
 }
 
+/**
+ * Подробности одного тайтла. Нужны для карточек, добавленных раньше, —
+ * в них оценки TMDB ещё не было, а перезапрашивать всю выдачу ради неё глупо.
+ */
+export async function tmdbDetails(kind, id, { key, lang }) {
+  const data = await withRetry(() => fetchJSON(
+    `${TMDB_API}/${kind}/${encodeURIComponent(id)}`
+    + `?api_key=${encodeURIComponent(key)}&language=${lang}`));
+
+  return {
+    voteAverage: data.vote_average ? Math.round(data.vote_average * 10) / 10 : null,
+    voteCount:   data.vote_count || 0,
+    runtime:     data.runtime || data.episode_run_time?.[0] || null,
+    seasons:     data.number_of_seasons || null,
+    episodes:    data.number_of_episodes || null,
+    genres:      (data.genres || []).map((g) => g.name),
+    overview:    data.overview || '',
+  };
+}
+
+/** Оценка MyAnimeList для конкретного аниме. */
+export async function jikanDetails(id) {
+  const { data } = await withRetry(() =>
+    fetchJSON(`https://api.jikan.moe/v4/anime/${encodeURIComponent(id)}`));
+  return {
+    voteAverage: data?.score || null,
+    voteCount:   data?.scored_by || 0,
+    episodes:    data?.episodes || null,
+    genres:      (data?.genres || []).map((g) => g.name),
+    overview:    data?.synopsis || '',
+  };
+}
+
 /* ----------------------------- рекомендации ------------------------------ */
 
 /**
  * «Похожее» от TMDB для одного тайтла.
  * @param {'movie'|'tv'} kind
  */
-export async function tmdbRecommendations(kind, id, { key, lang }) {
-  const url = `${TMDB_API}/${kind}/${encodeURIComponent(id)}/recommendations`
-    + `?api_key=${encodeURIComponent(key)}&language=${lang}&page=1`;
+export async function tmdbRecommendations(kind, id, { key, lang, page = 1, endpoint = 'recommendations' }) {
+  const url = `${TMDB_API}/${kind}/${encodeURIComponent(id)}/${endpoint}`
+    + `?api_key=${encodeURIComponent(key)}&language=${lang}&page=${page}`;
 
   const data = await withRetry(() => fetchJSON(url));
   const genres = await tmdbGenres(kind === 'movie' ? 'movie' : 'tv', key, lang);
@@ -217,6 +252,8 @@ async function searchJikan(query) {
       sourceId:      a.mal_id,
       episodes:      a.episodes || null,
       popularity:    a.members || 0,
+      voteAverage:   a.score || null,
+      voteCount:     a.scored_by || 0,
     };
   });
 }
@@ -236,6 +273,7 @@ async function searchAniList(query) {
         episodes
         genres
         popularity
+        averageScore
       }
     }
   }`;
@@ -268,6 +306,9 @@ async function searchAniList(query) {
       sourceId:      a.id,
       episodes:      a.episodes || null,
       popularity:    a.popularity || 0,
+      // AniList держит оценку в процентах, приводим к привычной десятке
+      voteAverage:   a.averageScore ? Math.round(a.averageScore) / 10 : null,
+      voteCount:     0,
     };
   });
 }

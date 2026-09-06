@@ -22,6 +22,17 @@ export function escapeHTML(str = '') {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+/** Плашка с оценкой базы — TMDB для кино, MyAnimeList для аниме. */
+export function voteBadge(item) {
+  if (!item.voteAverage) return '';
+  const who = item.source === 'jikan' || item.source === 'anilist' ? 'MAL' : 'TMDB';
+  const count = item.voteCount >= 1000
+    ? `${Math.round(item.voteCount / 1000)}K`
+    : (item.voteCount || '');
+  return `<span class="badge badge--vote" title="Оценка ${who}">★ ${item.voteAverage}`
+       + `<span class="badge__who">${who}${count ? ` · ${count}` : ''}</span></span>`;
+}
+
 /** Класс плашки оценки: красная 1–4, жёлтая 5–6, фиолетовая 7–10. */
 function scoreClass(rating) {
   if (rating == null) return 'score score--none';
@@ -66,6 +77,7 @@ function posterHTML(item, cls, phCls) {
 export function itemCard(item, mode, saved = null) {
   const year = item.year ? `<span>${item.year}</span>` : '';
   const type = `<span class="badge badge--${item.type}">${TYPE_LABEL[item.type]}</span>`;
+  const vote = voteBadge(item);
 
   let side;
   if (mode === 'library') {
@@ -96,7 +108,7 @@ export function itemCard(item, mode, saved = null) {
       ${posterHTML(item, 'item__poster', 'item__poster--ph')}
       <div class="item__main">
         <h3 class="item__title">${escapeHTML(item.title)}</h3>
-        <div class="item__meta">${type}${year}</div>
+        <div class="item__meta">${type}${year}${vote}</div>
         ${sub}
       </div>
       ${side}
@@ -117,6 +129,7 @@ export function detailSheet(item, { saved }) {
   const meta = [
     `<span class="badge badge--${item.type}">${TYPE_LABEL[item.type]}</span>`,
     item.year ? `<span class="badge">${item.year}</span>` : '',
+    `<span id="d-vote">${voteBadge(item)}</span>`,
     item.episodes ? `<span class="badge">${item.episodes} эп.</span>` : '',
     ...(item.genres || []).slice(0, 3).map((g) => `<span class="badge">${escapeHTML(g)}</span>`),
   ].filter(Boolean).join('');

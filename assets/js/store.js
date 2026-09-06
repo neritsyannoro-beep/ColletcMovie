@@ -135,6 +135,10 @@ function normalize(item) {
     status:        ['watched', 'watching', 'planned', 'dropped'].includes(item.status) ? item.status : 'watched',
     rating:        Number.isFinite(item.rating) && item.rating >= 1 && item.rating <= 10 ? item.rating : null,
     note:          item.note || '',
+    // Оценка самой базы (TMDB или MyAnimeList) — не путать с твоей.
+    voteAverage:   Number.isFinite(item.voteAverage) ? item.voteAverage : null,
+    voteCount:     Number.isFinite(item.voteCount) ? item.voteCount : 0,
+    episodes:      Number.isFinite(item.episodes) ? item.episodes : null,
     addedAt:       item.addedAt || new Date().toISOString(),
     updatedAt:     item.updatedAt || item.addedAt || new Date().toISOString(),
   };

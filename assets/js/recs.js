@@ -12,8 +12,9 @@ import { tmdbRecommendations, jikanRecommendations } from './providers.js';
 
 const CACHE_KEY  = 'collectmovie:recs';
 const CACHE_TTL  = 6 * 60 * 60 * 1000;   // 6 часов
-const MAX_SEEDS  = 8;                    // больше — лишние запросы без пользы
-const MAX_OUTPUT = 24;
+const MAX_SEEDS  = 8;    // столько тайтлов опрашиваем за раз
+const SEED_POOL  = 30;   // из скольких лучших выбираем эту восьмёрку
+const MAX_OUTPUT = 40;
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -22,13 +23,38 @@ const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 const normTitle = (title = '') =>
   title.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
 
-/** Тайтлы, на которых строим подборку: сначала самые любимые. */
-function pickSeeds(type) {
-  return store.all()
+/** Тасовка, зависящая от круга: один круг — один и тот же результат. */
+function shuffleFor(list, round) {
+  const arr = [...list];
+  let state = (round + 1) * 9301 + 49297;
+  const next = () => {
+    state = (state * 9301 + 49297) % 233280;
+    return state / 233280;
+  };
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(next() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+/**
+ * Тайтлы, на которых строим подборку.
+ *
+ * Раньше это была просто восьмёрка самых любимых — и подборка не менялась
+ * никогда: те же источники дают тот же ответ. Теперь берём из тридцати лучших
+ * случайную восьмёрку, своя на каждый круг обновления, поэтому кнопка
+ * «обновить» показывает новое, оставаясь в рамках того, что тебе нравится.
+ */
+function pickSeeds(type, round = 0) {
+  const pool = store.all()
     .filter((i) => i.type === type && (i.status === 'watched' || i.status === 'watching'))
     .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0)
                  || new Date(b.updatedAt) - new Date(a.updatedAt))
-    .slice(0, MAX_SEEDS);
+    .slice(0, SEED_POOL);
+
+  if (pool.length <= MAX_SEEDS) return pool;
+  return shuffleFor(pool, round).slice(0, MAX_SEEDS);
 }
 
 /** Всё, что уже в коллекции, — и по id, и по названию (id у баз разные). */
@@ -74,13 +100,28 @@ export function clearCache() {
 
 /* ------------------------------ сбор советов ------------------------------ */
 
-/** Запрашивает «похожее» для одного тайтла из коллекции. */
+/**
+ * Запрашивает «похожее» для одного тайтла коллекции.
+ *
+ * У TMDB два разных списка: recommendations (что смотрят вместе с этим) и
+ * similar (что похоже по жанрам и темам). Берём оба и по две страницы —
+ * иначе при большой коллекции почти всё отсеивается как уже просмотренное.
+ */
 async function similarTo(seed, { key, lang }) {
   if (seed.source === 'tmdb' && seed.sourceId) {
     // id вида tmdb-movie-27205 / tmdb-tv-1396 — вид нужен для эндпоинта
     const kind = seed.id.startsWith('tmdb-movie') ? 'movie' : 'tv';
     if (!key) return [];
-    return tmdbRecommendations(kind, seed.sourceId, { key, lang });
+
+    const requests = [
+      tmdbRecommendations(kind, seed.sourceId, { key, lang, page: 1 }),
+      tmdbRecommendations(kind, seed.sourceId, { key, lang, page: 2 }),
+      tmdbRecommendations(kind, seed.sourceId, { key, lang, page: 1, endpoint: 'similar' }),
+    ];
+    const settled = await Promise.allSettled(requests);
+    const merged = settled.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
+    if (!merged.length && settled.every((r) => r.status === 'rejected')) throw settled[0].reason;
+    return merged;
   }
   if ((seed.source === 'jikan' || seed.source === 'anilist') && seed.type === 'anime') {
     // У AniList свои id, а рекомендации мы умеем брать только по MAL —
@@ -95,7 +136,7 @@ async function similarTo(seed, { key, lang }) {
  * Собирает подборку для категории.
  * @param {'movie'|'series'|'anime'} type
  * @param {{tmdbKey?:string, lang?:string}} prefs
- * @param {{force?:boolean}} options
+ * @param {{force?:boolean, round?:number}} options
  * @returns {Promise<{items:Array, seeds:Array, status:string}>}
  *   status: 'ok' | 'no-seeds' | 'need-key' | 'failed'
  */
@@ -103,7 +144,8 @@ export async function recommend(type, prefs = {}, options = {}) {
   const key  = (prefs.tmdbKey || '').trim();
   const lang = prefs.lang || 'ru-RU';
 
-  const seeds = pickSeeds(type);
+  const round = options.round || 0;
+  const seeds = pickSeeds(type, round);
   if (!seeds.length) return { items: [], seeds, status: 'no-seeds' };
 
   // Фильмы и сериалы умеет советовать только TMDB; аниме вытянет и Jikan.
@@ -113,7 +155,7 @@ export async function recommend(type, prefs = {}, options = {}) {
     return { items: [], seeds, status: key ? 'no-seeds' : 'need-key' };
   }
 
-  const sig = signature(usable);
+  const sig = `${round}|${signature(usable)}`;
   if (!options.force) {
     const cached = readCache(type, sig);
     if (cached) return { items: cached, seeds: usable, status: 'ok' };

@@ -1,17 +1,19 @@
 /** Точка входа: маршрутизация между экранами, фильтры, поиск, шторка, настройки. */
 
 import * as store from './store.js';
-import { search as searchProviders } from './providers.js';
+import { search as searchProviders, tmdbDetails, jikanDetails } from './providers.js';
 import { recommend, clearCache as clearRecsCache } from './recs.js';
 import {
-  $, $$, itemCard, detailSheet, manualSheet, statsView, toast,
+  $, $$, itemCard, detailSheet, manualSheet, statsView, toast, voteBadge,
 } from './ui.js';
 
 /* -------------------------------- состояние ------------------------------- */
 
 const libFilters = { query: '', type: 'all', status: 'all', sort: 'added_desc' };
 const searchState = { query: '', type: 'all', results: [], seq: 0 };
-const recsState   = { type: 'movie', results: [], seq: 0, loaded: new Set() };
+// Подборки держим по категориям: одна общая переменная приводила к тому,
+// что при возврате на вкладку показывались результаты предыдущей.
+const recsState   = { type: 'movie', byType: new Map(), seq: 0, round: 0 };
 
 let sheetDraft = null;      // { item, saved, status, rating, note, isManual }
 
@@ -180,7 +182,7 @@ function openDetail(id, { defaultStatus = 'watched' } = {}) {
   const saved = store.get(id);
   const found = saved
     || searchState.results.find((r) => r.id === id)
-    || recsState.results.find((r) => r.id === id);
+    || findInRecs(id);
   if (!found) return;
 
   // Для новой записи ставим разумные значения по умолчанию.
@@ -196,6 +198,50 @@ function openDetail(id, { defaultStatus = 'watched' } = {}) {
   };
 
   openSheet(detailSheet(item, { saved: Boolean(saved) }));
+  if (item.voteAverage == null) fillVote(item);
+}
+
+/**
+ * Дотягивает оценку базы для карточек, где её нет: записи, добавленные до
+ * появления этой плашки, и рекомендации MyAnimeList — там в ответе только
+ * название с постером.
+ */
+async function fillVote(item) {
+  const prefs = store.getPrefs();
+  let details = null;
+
+  try {
+    if (item.source === 'tmdb' && item.sourceId) {
+      if (!prefs.tmdbKey) return;
+      const kind = item.id.startsWith('tmdb-movie') ? 'movie' : 'tv';
+      details = await tmdbDetails(kind, item.sourceId, { key: prefs.tmdbKey, lang: prefs.lang });
+    } else if (item.source === 'jikan' && item.sourceId) {
+      details = await jikanDetails(item.sourceId);
+    }
+  } catch {
+    return;   // без оценки карточка вполне живая
+  }
+  if (!details?.voteAverage) return;
+
+  // Шторку могли успеть закрыть или открыть другую.
+  if (!sheetDraft || sheetDraft.item.id !== item.id) return;
+
+  Object.assign(sheetDraft.item, {
+    voteAverage: details.voteAverage,
+    voteCount:   details.voteCount,
+    episodes:    sheetDraft.item.episodes || details.episodes || null,
+    overview:    sheetDraft.item.overview || details.overview || '',
+    genres:      sheetDraft.item.genres?.length ? sheetDraft.item.genres : details.genres,
+  });
+
+  const slot = $('#d-vote');
+  if (slot) slot.innerHTML = voteBadge(sheetDraft.item);
+
+  // Если тайтл уже в коллекции — сохраняем, чтобы в следующий раз не ходить в сеть.
+  if (sheetDraft.saved) {
+    store.upsert({ ...store.get(item.id), voteAverage: details.voteAverage, voteCount: details.voteCount });
+    renderLibrary();
+  }
 }
 
 function openManual() {
@@ -341,8 +387,9 @@ async function loadRecs({ force = false } = {}) {
   const refresh = $('#recs-refresh');
 
   // Повторно на ту же вкладку не ходим: подборка уже посчитана и закэширована.
-  if (!force && recsState.loaded.has(type) && recsState.results.length) {
-    renderRecs(recsState.results);
+  const ready = recsState.byType.get(type);
+  if (!force && ready?.length) {
+    renderRecs(ready);
     return;
   }
 
@@ -356,7 +403,7 @@ async function loadRecs({ force = false } = {}) {
 
   let payload;
   try {
-    payload = await recommend(type, store.getPrefs(), { force });
+    payload = await recommend(type, store.getPrefs(), { force, round: recsState.round });
   } catch {
     payload = { items: [], status: 'failed' };
   } finally {
@@ -367,7 +414,7 @@ async function loadRecs({ force = false } = {}) {
   status.hidden = true;
 
   if (!payload.items.length) {
-    recsState.results = [];
+    recsState.byType.delete(type);
     const texts = RECS_EMPTY[payload.status] || RECS_EMPTY.failed;
     const [title, text] = texts[type] || texts.all;
     $('.empty__title', empty).textContent = title;
@@ -379,8 +426,7 @@ async function loadRecs({ force = false } = {}) {
     return;
   }
 
-  recsState.results = payload.items;
-  recsState.loaded.add(type);
+  recsState.byType.set(type, payload.items);
   renderRecs(payload.items);
 }
 
@@ -393,8 +439,18 @@ function renderRecs(items) {
 
 /** Обновляет галочки «уже в коллекции» в открытой подборке. */
 function refreshRecsMarks() {
-  if ($('#screen-recs').hidden || !recsState.results.length) return;
-  renderRecs(recsState.results);
+  const current = recsState.byType.get(recsState.type);
+  if ($('#screen-recs').hidden || !current?.length) return;
+  renderRecs(current);
+}
+
+/** Ищет карточку среди всех посчитанных подборок, а не только текущей. */
+function findInRecs(id) {
+  for (const items of recsState.byType.values()) {
+    const hit = items.find((r) => r.id === id);
+    if (hit) return hit;
+  }
+  return null;
 }
 
 function wireRecs() {
@@ -407,7 +463,9 @@ function wireRecs() {
   });
 
   $('#recs-refresh').addEventListener('click', () => {
-    recsState.loaded.delete(recsState.type);
+    // Новый круг — другая восьмёрка источников, иначе выдача не изменится.
+    recsState.round += 1;
+    recsState.byType.delete(recsState.type);
     loadRecs({ force: true });
   });
 
@@ -677,8 +735,8 @@ function wireSettings() {
 /** Сбрасывает посчитанные подборки — после смены ключа, языка или коллекции. */
 function resetRecs() {
   clearRecsCache();
-  recsState.results = [];
-  recsState.loaded.clear();
+  recsState.byType.clear();
+  recsState.round = 0;
 }
 
 function wireGlobal() {
