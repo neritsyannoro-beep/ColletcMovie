@@ -4,7 +4,7 @@
  * они всегда идут в сеть.
  */
 
-const CACHE = 'collectmovie-v1';
+const CACHE = 'collectmovie-v2';
 
 const SHELL = [
   './',
@@ -15,6 +15,7 @@ const SHELL = [
   './assets/js/store.js',
   './assets/js/ui.js',
   './assets/js/providers.js',
+  './assets/js/recs.js',
   './icons/icon-192.png',
   './icons/icon-512.png',
 ];

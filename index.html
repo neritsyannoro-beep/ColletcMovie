@@ -120,6 +120,34 @@
     </div>
   </section>
 
+  <!-- ======================= СОВЕТЫ ======================= -->
+  <section class="screen" id="screen-recs" data-screen="recs" hidden>
+    <header class="topbar">
+      <div class="topbar__row">
+        <h1 class="topbar__title">Советы</h1>
+        <button class="icon-btn" id="recs-refresh" type="button" aria-label="Обновить">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6"/></svg>
+        </button>
+      </div>
+      <div class="chips" id="recs-type-chips" role="tablist" aria-label="Категория">
+        <button class="chip is-active" data-type="movie" role="tab">Фильмы</button>
+        <button class="chip" data-type="series" role="tab">Сериалы</button>
+        <button class="chip" data-type="anime" role="tab">Аниме</button>
+      </div>
+    </header>
+
+    <div class="screen__body">
+      <div id="recs-status" class="hint" hidden></div>
+      <div id="recs-list" class="list"></div>
+      <div id="recs-empty" class="empty" hidden>
+        <div class="empty__art">✨</div>
+        <p class="empty__title"></p>
+        <p class="empty__text"></p>
+        <button class="btn btn--primary" id="recs-empty-btn" hidden></button>
+      </div>
+    </div>
+  </section>
+
   <!-- ======================= СТАТИСТИКА ======================= -->
   <section class="screen" id="screen-stats" data-screen="stats" hidden>
     <header class="topbar">
@@ -190,6 +218,10 @@
     <button class="tab" data-goto="search">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4a7 7 0 1 1 0 14 7 7 0 0 1 0-14Zm9 16-4.35-4.35"/></svg>
       <span>Поиск</span>
+    </button>
+    <button class="tab" data-goto="recs">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 1.9 4.6L18.5 9l-4.6 1.9L12 15.5l-1.9-4.6L5.5 9l4.6-1.4L12 3Z"/><path d="M18 15.5l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8.8-2Z"/></svg>
+      <span>Советы</span>
     </button>
     <button class="tab" data-goto="stats">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V10M12 20V4M19 20v-6"/></svg>

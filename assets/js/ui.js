@@ -60,8 +60,8 @@ function posterHTML(item, cls, phCls) {
 
 /**
  * Карточка в списке.
- * @param {'library'|'search'} mode
- * @param {object|null} saved — запись из коллекции (для режима поиска)
+ * @param {'library'|'search'} mode — 'search' используется и для советов
+ * @param {object|null} saved — запись из коллекции, если тайтл уже добавлен
  */
 export function itemCard(item, mode, saved = null) {
   const year = item.year ? `<span>${item.year}</span>` : '';
@@ -80,10 +80,16 @@ export function itemCard(item, mode, saved = null) {
       : `<div class="item__side"><div class="item__add" aria-label="Добавить">+</div></div>`;
   }
 
-  const sub = mode === 'library' && item.note
-    ? `<p class="item__sub">${escapeHTML(item.note)}</p>`
-    : (mode === 'search' && item.overview
-        ? `<p class="item__sub">${escapeHTML(item.overview)}</p>` : '');
+  let sub = '';
+  if (mode === 'library' && item.note) {
+    sub = `<p class="item__sub">${escapeHTML(item.note)}</p>`;
+  } else if (item.overview) {
+    sub = `<p class="item__sub">${escapeHTML(item.overview)}</p>`;
+  }
+  if (item.because?.length) {
+    const names = item.because.map((t) => `«${t}»`).join(' и ');
+    sub += `<p class="item__why">Похоже на ${escapeHTML(names)}</p>`;
+  }
 
   return `
     <button class="item" data-id="${escapeHTML(item.id)}" type="button">

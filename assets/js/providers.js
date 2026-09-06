@@ -114,24 +114,10 @@ async function tmdbGenres(kind, key, lang) {
 
 /* ---------------------------------- TMDB ---------------------------------- */
 
-async function searchTMDB(query, kind, { key, lang }) {
-  const url = `${TMDB_API}/search/${kind}`
-    + `?api_key=${encodeURIComponent(key)}`
-    + `&query=${encodeURIComponent(query)}`
-    + `&language=${lang}&include_adult=false&page=1`;
-
-  let data;
-  try {
-    data = await fetchJSON(url);
-  } catch (err) {
-    if (err.status === 401) throw new Error('TMDB отклонил ключ — проверь его в настройках.');
-    throw err;
-  }
-
-  const genres = await tmdbGenres(kind === 'movie' ? 'movie' : 'tv', key, lang);
+/** Приводит запись TMDB к внутреннему виду. Общий для поиска и рекомендаций. */
+function mapTMDB(r, kind, genres) {
   const base = kind === 'movie' ? 'movie' : 'series';
-
-  return (data.results || []).map((r) => ({
+  return {
     id:            `tmdb-${kind}-${r.id}`,
     // Японская анимация — это аниме, даже если TMDB считает её обычным
     // сериалом или мультфильмом (16 — жанр «Анимация»).
@@ -147,6 +133,63 @@ async function searchTMDB(query, kind, { key, lang }) {
     source:        'tmdb',
     sourceId:      r.id,
     popularity:    r.popularity || 0,
+  };
+}
+
+async function searchTMDB(query, kind, { key, lang }) {
+  const url = `${TMDB_API}/search/${kind}`
+    + `?api_key=${encodeURIComponent(key)}`
+    + `&query=${encodeURIComponent(query)}`
+    + `&language=${lang}&include_adult=false&page=1`;
+
+  let data;
+  try {
+    data = await fetchJSON(url);
+  } catch (err) {
+    if (err.status === 401) throw new Error('TMDB отклонил ключ — проверь его в настройках.');
+    throw err;
+  }
+
+  const genres = await tmdbGenres(kind === 'movie' ? 'movie' : 'tv', key, lang);
+  return (data.results || []).map((r) => mapTMDB(r, kind, genres));
+}
+
+/* ----------------------------- рекомендации ------------------------------ */
+
+/**
+ * «Похожее» от TMDB для одного тайтла.
+ * @param {'movie'|'tv'} kind
+ */
+export async function tmdbRecommendations(kind, id, { key, lang }) {
+  const url = `${TMDB_API}/${kind}/${encodeURIComponent(id)}/recommendations`
+    + `?api_key=${encodeURIComponent(key)}&language=${lang}&page=1`;
+
+  const data = await withRetry(() => fetchJSON(url));
+  const genres = await tmdbGenres(kind === 'movie' ? 'movie' : 'tv', key, lang);
+  return (data.results || []).map((r) => mapTMDB(r, kind, genres));
+}
+
+/**
+ * Рекомендации MyAnimeList — их составляют сами зрители, поэтому для аниме
+ * они обычно точнее жанровых подборок. В ответе только название и постер:
+ * год и описание Jikan здесь не отдаёт.
+ */
+export async function jikanRecommendations(id) {
+  const data = await withRetry(() =>
+    fetchJSON(`https://api.jikan.moe/v4/anime/${encodeURIComponent(id)}/recommendations`));
+
+  return (data.data || []).slice(0, 20).map(({ entry, votes }) => ({
+    id:            `jikan-${entry.mal_id}`,
+    type:          'anime',
+    title:         entry.title || 'Без названия',
+    originalTitle: '',
+    year:          null,
+    poster:        entry.images?.jpg?.large_image_url || entry.images?.jpg?.image_url || '',
+    overview:      '',
+    genres:        [],
+    source:        'jikan',
+    sourceId:      entry.mal_id,
+    votes:         votes || 0,
   }));
 }
 

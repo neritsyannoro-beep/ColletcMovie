@@ -2,6 +2,7 @@
 
 import * as store from './store.js';
 import { search as searchProviders } from './providers.js';
+import { recommend, clearCache as clearRecsCache } from './recs.js';
 import {
   $, $$, itemCard, detailSheet, manualSheet, statsView, toast,
 } from './ui.js';
@@ -10,6 +11,7 @@ import {
 
 const libFilters = { query: '', type: 'all', status: 'all', sort: 'added_desc' };
 const searchState = { query: '', type: 'all', results: [], seq: 0 };
+const recsState   = { type: 'movie', results: [], seq: 0, loaded: new Set() };
 
 let sheetDraft = null;      // { item, saved, status, rating, note, isManual }
 
@@ -19,6 +21,7 @@ function goto(name) {
   $$('.screen').forEach((s) => { s.hidden = s.dataset.screen !== name; });
   $$('.tab').forEach((t) => t.classList.toggle('is-active', t.dataset.goto === name));
   window.scrollTo(0, 0);
+  if (name === 'recs')     loadRecs();
   if (name === 'stats')    renderStats();
   if (name === 'settings') refreshStorageInfo();
   if (name === 'search')   setTimeout(() => $('#search-input').focus(), 120);
@@ -173,13 +176,15 @@ function closeSheet(fromHistory = false) {
 }
 
 /** Открывает карточку записи — из коллекции или из выдачи поиска. */
-function openDetail(id) {
+function openDetail(id, { defaultStatus = 'watched' } = {}) {
   const saved = store.get(id);
-  const found = saved || searchState.results.find((r) => r.id === id);
+  const found = saved
+    || searchState.results.find((r) => r.id === id)
+    || recsState.results.find((r) => r.id === id);
   if (!found) return;
 
   // Для новой записи ставим разумные значения по умолчанию.
-  const item = saved ? { ...found } : { ...found, status: 'watched', rating: null, note: '' };
+  const item = saved ? { ...found } : { ...found, status: defaultStatus, rating: null, note: '' };
 
   sheetDraft = {
     item,
@@ -255,8 +260,9 @@ function saveFromSheet() {
   const note = $('#d-note')?.value.trim() ?? '';
   const wasSaved = sheetDraft.saved;
 
+  const { because, ...item } = sheetDraft.item;   // because — только для показа
   store.upsert({
-    ...sheetDraft.item,
+    ...item,
     status: sheetDraft.status,
     rating: sheetDraft.rating,
     note,
@@ -265,6 +271,7 @@ function saveFromSheet() {
   closeSheet();
   renderLibrary();
   runSearchRefresh();
+  refreshRecsMarks();
   toast(wasSaved ? 'Сохранено' : 'Добавлено в коллекцию');
 }
 
@@ -298,6 +305,7 @@ function deleteFromSheet() {
   closeSheet();
   renderLibrary();
   runSearchRefresh();
+  refreshRecsMarks();
   toast('Удалено');
 }
 
@@ -307,6 +315,107 @@ function runSearchRefresh() {
   $('#search-list').innerHTML = searchState.results
     .map((r) => itemCard(r, 'search', store.get(r.id)))
     .join('');
+}
+
+/* --------------------------------- советы --------------------------------- */
+
+const RECS_EMPTY = {
+  'no-seeds': {
+    movie:  ['Пока не из чего исходить', 'Оцени несколько просмотренных фильмов — и здесь появятся похожие.'],
+    series: ['Пока не из чего исходить', 'Оцени несколько просмотренных сериалов — и здесь появятся похожие.'],
+    anime:  ['Пока не из чего исходить', 'Оцени несколько просмотренных аниме — и здесь появятся похожие.'],
+  },
+  'need-key': {
+    all: ['Нужен ключ TMDB', 'Советы строятся на базе TMDB. Ключ бесплатный и добавляется за минуту.'],
+  },
+  failed: {
+    all: ['Не получилось собрать', 'Базы не ответили. Попробуй обновить через минуту.'],
+  },
+};
+
+async function loadRecs({ force = false } = {}) {
+  const type   = recsState.type;
+  const list   = $('#recs-list');
+  const empty  = $('#recs-empty');
+  const status = $('#recs-status');
+  const refresh = $('#recs-refresh');
+
+  // Повторно на ту же вкладку не ходим: подборка уже посчитана и закэширована.
+  if (!force && recsState.loaded.has(type) && recsState.results.length) {
+    renderRecs(recsState.results);
+    return;
+  }
+
+  const seq = ++recsState.seq;
+  list.innerHTML = '';
+  empty.hidden = true;
+  status.hidden = false;
+  status.className = 'hint';
+  status.innerHTML = '<span class="spinner"></span>Подбираю по твоим оценкам…';
+  refresh.classList.add('is-busy');
+
+  let payload;
+  try {
+    payload = await recommend(type, store.getPrefs(), { force });
+  } catch {
+    payload = { items: [], status: 'failed' };
+  } finally {
+    if (seq === recsState.seq) refresh.classList.remove('is-busy');
+  }
+  if (seq !== recsState.seq) return;
+
+  status.hidden = true;
+
+  if (!payload.items.length) {
+    recsState.results = [];
+    const texts = RECS_EMPTY[payload.status] || RECS_EMPTY.failed;
+    const [title, text] = texts[type] || texts.all;
+    $('.empty__title', empty).textContent = title;
+    $('.empty__text', empty).textContent = text;
+    const btn = $('#recs-empty-btn');
+    btn.hidden = payload.status !== 'need-key';
+    btn.textContent = 'Добавить ключ';
+    empty.hidden = false;
+    return;
+  }
+
+  recsState.results = payload.items;
+  recsState.loaded.add(type);
+  renderRecs(payload.items);
+}
+
+function renderRecs(items) {
+  $('#recs-empty').hidden = true;
+  $('#recs-list').innerHTML = items
+    .map((r) => itemCard(r, 'search', store.get(r.id)))
+    .join('');
+}
+
+/** Обновляет галочки «уже в коллекции» в открытой подборке. */
+function refreshRecsMarks() {
+  if ($('#screen-recs').hidden || !recsState.results.length) return;
+  renderRecs(recsState.results);
+}
+
+function wireRecs() {
+  $('#recs-type-chips').addEventListener('click', (e) => {
+    const chip = e.target.closest('.chip');
+    if (!chip || chip.dataset.type === recsState.type) return;
+    recsState.type = chip.dataset.type;
+    $$('#recs-type-chips .chip').forEach((c) => c.classList.toggle('is-active', c === chip));
+    loadRecs();
+  });
+
+  $('#recs-refresh').addEventListener('click', () => {
+    recsState.loaded.delete(recsState.type);
+    loadRecs({ force: true });
+  });
+
+  $('#recs-list').addEventListener('click', (e) => {
+    const card = e.target.closest('.item');
+    // Из советов логично добавлять в «В планах» — это же то, что ещё не смотрел.
+    if (card) openDetail(card.dataset.id, { defaultStatus: 'planned' });
+  });
 }
 
 /* ------------------------------- статистика ------------------------------- */
@@ -528,17 +637,20 @@ function wireSettings() {
 
   $('#btn-save-key').addEventListener('click', () => {
     store.setPrefs({ tmdbKey: $('#tmdb-key').value.trim() });
+    resetRecs();
     toast($('#tmdb-key').value.trim() ? 'Ключ сохранён' : 'Ключ очищен');
   });
 
   $('#btn-clear-key').addEventListener('click', () => {
     $('#tmdb-key').value = '';
     store.setPrefs({ tmdbKey: '' });
+    resetRecs();
     toast('Ключ удалён — поиск снова через бесплатные базы');
   });
 
   $('#tmdb-lang').addEventListener('change', (e) => {
     store.setPrefs({ lang: e.target.value });
+    resetRecs();
     toast('Язык поиска обновлён');
   });
 
@@ -555,10 +667,18 @@ function wireSettings() {
     if (!confirm('Удалить ВСЮ коллекцию без возможности отката?\nСначала лучше скачать бэкап.')) return;
     if (!confirm('Точно? Это последний вопрос.')) return;
     store.wipe();
+    resetRecs();
     renderLibrary();
     refreshStorageInfo();
     toast('Коллекция очищена');
   });
+}
+
+/** Сбрасывает посчитанные подборки — после смены ключа, языка или коллекции. */
+function resetRecs() {
+  clearRecsCache();
+  recsState.results = [];
+  recsState.loaded.clear();
 }
 
 function wireGlobal() {
@@ -615,12 +735,13 @@ async function init() {
   wireGlobal();
   wireLibrary();
   wireSearch();
+  wireRecs();
   wireSettings();
 
   renderLibrary();
 
   const start = location.hash.replace('#', '');
-  goto(['search', 'stats', 'settings'].includes(start) ? start : 'library');
+  goto(['search', 'recs', 'stats', 'settings'].includes(start) ? start : 'library');
 
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('sw.js').catch(() => { /* офлайн-режим необязателен */ });

@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "http-server -p 8080 -c-1",
-    "test": "node tests/e2e.mjs"
+    "test": "node tests/e2e.mjs && node tests/recs.mjs"
   },
   "devDependencies": {
     "http-server": "^14.1.1",
