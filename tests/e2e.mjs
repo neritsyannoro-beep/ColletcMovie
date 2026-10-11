@@ -284,6 +284,39 @@ const animeTotal = await page.locator('#search-list .item').count();
 ok('во вкладке «Аниме» только аниме', animeTotal > 0 && animeOnly === animeTotal,
    `аниме ${animeOnly} из ${animeTotal}`);
 
+// ---- 23. TMDB упала -> поиск уходит на бесплатные базы ----
+await page.evaluate(() => localStorage.setItem('collectmovie:prefs', JSON.stringify({ tmdbKey:'K', lang:'ru-RU' })));
+await page.reload({ waitUntil:'networkidle' });
+await page.unroute('**/api.themoviedb.org/3/search/movie**');
+await page.unroute('**/api.themoviedb.org/3/search/tv**');
+await page.route('**/api.themoviedb.org/3/search/**', r => r.abort('failed'));
+await page.locator('.tab[data-goto="search"]').click();
+await page.locator('#search-input').fill('breaking');
+await page.waitForSelector('#search-list .item', { timeout: 20000 });
+const fallbackTitles = await page.locator('#search-list .item__title').allTextContents();
+ok('при падении TMDB подхватились бесплатные базы',
+   fallbackTitles.some(t=>t.includes('Breaking Bad')) || fallbackTitles.some(t=>t.includes('Начало')),
+   fallbackTitles.join(' | '));
+const fbNote = await page.locator('#search-status').textContent();
+ok('честно сказано, что искали в запасных базах', /бесплатных базах/.test(fbNote||''), fbNote||'пусто');
+
+// ---- 24. проверка ключа различает причины ----
+await page.route('**/api.themoviedb.org/3/configuration**', r => r.fulfill({ status:401, body:'{}' }));
+await page.locator('.tab[data-goto="settings"]').click();
+await page.locator('#btn-check-key').click();
+await page.waitForFunction(() => /не принял|не отвечает|Связь есть/.test(
+  document.querySelector('#key-status').textContent), null, { timeout: 15000 });
+ok('неверный ключ распознан', /не принял ключ/.test(await page.locator('#key-status').textContent()),
+   await page.locator('#key-status').textContent());
+
+await page.unroute('**/api.themoviedb.org/3/configuration**');
+await page.route('**/api.themoviedb.org/3/configuration**', r => r.abort('failed'));
+await page.locator('#btn-check-key').click();
+await page.waitForFunction(() => /не отвечает/.test(
+  document.querySelector('#key-status').textContent), null, { timeout: 15000 });
+const unreach = await page.locator('#key-status').textContent();
+ok('недоступность TMDB отличается от плохого ключа', /сеть/.test(unreach), unreach);
+
 } catch (err) {
   console.log('\n!!! ТЕСТ УПАЛ: ' + err.message.split('\n')[0]);
   try {

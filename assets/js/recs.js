@@ -15,8 +15,18 @@ const CACHE_TTL  = 6 * 60 * 60 * 1000;   // 6 часов
 const MAX_SEEDS  = 8;    // столько тайтлов опрашиваем за раз
 const SEED_POOL  = 30;   // из скольких лучших выбираем эту восьмёрку
 const MAX_OUTPUT = 40;
+const SEED_TIMEOUT  = 9000;    // сколько ждём один тайтл
+const TOTAL_TIMEOUT = 25000;   // и всю подборку целиком
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Отдаёт запасное значение, если обещание не уложилось в срок. */
+function withDeadline(promise, ms, fallback) {
+  return Promise.race([
+    promise.catch(() => fallback),
+    delay(ms).then(() => fallback),
+  ]);
+}
 
 /* ------------------------------ вспомогательное --------------------------- */
 
@@ -165,14 +175,8 @@ export async function recommend(type, prefs = {}, options = {}) {
   const pool = new Map();   // ключ -> { item, score, from:Set }
   let failures = 0;
 
-  for (const seed of usable) {
-    let similar;
-    try {
-      similar = await similarTo(seed, { key, lang });
-    } catch {
-      failures++;
-      continue;
-    }
+  const absorb = (seed, similar) => {
+    if (!similar.length) { failures++; return; }
 
     // Оценка источника задаёт вес: совет по любимому фильму весомее.
     const weight = (seed.rating ?? 7) / 10;
@@ -191,10 +195,33 @@ export async function recommend(type, prefs = {}, options = {}) {
       if (!bucket.item.poster && candidate.poster) bucket.item = candidate;
       pool.set(norm, bucket);
     });
+  };
 
-    // Jikan не любит частые запросы — притормаживаем между ними.
-    if (seed.source === 'jikan') await delay(400);
+  // Источники опрашиваем разом. Раньше они шли по очереди, и восемь тайтлов
+  // при медленной сети складывались в минуты ожидания с пустым экраном.
+  const tmdbSeeds  = usable.filter((s) => s.source === 'tmdb');
+  const jikanSeeds = usable.filter((s) => s.source === 'jikan');
+
+  const rounds = [];
+
+  for (const seed of tmdbSeeds) {
+    rounds.push(withDeadline(similarTo(seed, { key, lang }), SEED_TIMEOUT, [])
+      .then((similar) => absorb(seed, similar)));
   }
+
+  // Jikan не любит частые запросы, поэтому его тайтлы идут цепочкой,
+  // но сама цепочка выполняется параллельно с запросами к TMDB.
+  if (jikanSeeds.length) {
+    rounds.push((async () => {
+      for (const seed of jikanSeeds) {
+        absorb(seed, await withDeadline(similarTo(seed, { key, lang }), SEED_TIMEOUT, []));
+        await delay(400);
+      }
+    })());
+  }
+
+  // Общий потолок: лучше показать частичную подборку, чем крутить спиннер.
+  await withDeadline(Promise.all(rounds), TOTAL_TIMEOUT, null);
 
   if (!pool.size) {
     return { items: [], seeds: usable, status: failures ? 'failed' : 'no-seeds' };

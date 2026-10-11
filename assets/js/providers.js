@@ -385,31 +385,39 @@ async function searchITunes(query, lang) {
 export async function search(query, type, prefs = {}) {
   const q = query.trim();
   const key = (prefs.tmdbKey || '').trim();
-  if (q.length < 2) return { results: [], warnings: [], hasKey: Boolean(key) };
+  if (q.length < 2) return { results: [], warnings: [], hasKey: Boolean(key), fellBack: false };
 
   const lang = prefs.lang || 'ru-RU';
   const want = (t) => type === 'all' || type === t;
-  const jobs = [];
 
-  if (key) {
+  // Аниме-база нужна при любом раскладе: у TMDB она неполная.
+  const animeJobs = want('anime') ? [['аниме-база', () => searchAnime(q)]] : [];
+
+  const freeJobs = [
+    ...(want('movie')  ? [['база фильмов (iTunes)',  () => searchITunes(q, lang)]] : []),
+    ...(want('series') ? [['база сериалов (TVmaze)', () => searchTVmaze(q)]] : []),
+  ];
+
+  const tmdbJobs = key ? [
     // Аниме в TMDB лежит среди фильмов и сериалов, поэтому для вкладки
     // «Аниме» тоже нужны оба запроса — тип разберём после ответа.
-    if (want('movie')  || want('anime')) jobs.push(['TMDB', searchTMDB(q, 'movie', { key, lang })]);
-    if (want('series') || want('anime')) jobs.push(['TMDB', searchTMDB(q, 'tv',    { key, lang })]);
-  } else {
-    if (want('movie'))  jobs.push(['база фильмов (iTunes)',  searchITunes(q, lang)]);
-    if (want('series')) jobs.push(['база сериалов (TVmaze)', searchTVmaze(q)]);
+    ...(want('movie')  || want('anime') ? [['TMDB', () => searchTMDB(q, 'movie', { key, lang })]] : []),
+    ...(want('series') || want('anime') ? [['TMDB', () => searchTMDB(q, 'tv',    { key, lang })]] : []),
+  ] : [];
+
+  const primary = await runJobs([...(key ? tmdbJobs : freeJobs), ...animeJobs]);
+  const results = primary.results;
+  const failed  = primary.failed;
+  let fellBack = false;
+
+  // TMDB не ответила — не оставляем человека с пустым экраном: бесплатные
+  // базы знают меньше русских названий, но это лучше, чем ничего.
+  if (key && failed.includes('TMDB') && freeJobs.length) {
+    const backup = await runJobs(freeJobs);
+    results.push(...backup.results);
+    failed.push(...backup.failed);
+    fellBack = backup.results.length > 0;
   }
-  if (want('anime')) jobs.push(['аниме-база', searchAnime(q)]);
-
-  const settled = await Promise.allSettled(jobs.map(([, promise]) => promise));
-
-  const results = [];
-  const failed = [];
-  settled.forEach((outcome, i) => {
-    if (outcome.status === 'fulfilled') results.push(...outcome.value);
-    else failed.push(jobs[i][0]);
-  });
 
   // Тип у результатов TMDB уточняется уже после ответа, поэтому лишнее
   // отсеиваем здесь, а не на этапе выбора запросов.
@@ -419,7 +427,37 @@ export async function search(query, type, prefs = {}) {
     results: rank(dedupe(matching), q),
     warnings: [...new Set(failed)],
     hasKey: Boolean(key),
+    fellBack,
   };
+}
+
+/** Запускает источники разом и помечает те, что не ответили. */
+async function runJobs(jobs) {
+  const settled = await Promise.allSettled(jobs.map(([, run]) => run()));
+  const results = [];
+  const failed = [];
+  settled.forEach((outcome, i) => {
+    if (outcome.status === 'fulfilled') results.push(...outcome.value);
+    else failed.push(jobs[i][0]);
+  });
+  return { results, failed };
+}
+
+/**
+ * Проверка ключа. Отличает «ключ неверный» от «TMDB недоступна» — без этого
+ * непонятно, чинить настройки или ждать, пока сеть отпустит.
+ */
+export async function checkTmdbKey(key, lang = 'ru-RU') {
+  if (!key) return { ok: false, reason: 'empty' };
+  try {
+    await fetchJSON(`${TMDB_API}/configuration?api_key=${encodeURIComponent(key)}&language=${lang}`,
+                    { timeout: 10000 });
+    return { ok: true, reason: 'ok' };
+  } catch (err) {
+    if (err.status === 401) return { ok: false, reason: 'bad-key' };
+    if (err.status) return { ok: false, reason: 'server', status: err.status };
+    return { ok: false, reason: 'unreachable' };
+  }
 }
 
 /** Насколько источнику стоит доверять, если один и тот же тайтл пришёл дважды. */

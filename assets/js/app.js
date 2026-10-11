@@ -1,7 +1,7 @@
 /** Точка входа: маршрутизация между экранами, фильтры, поиск, шторка, настройки. */
 
 import * as store from './store.js';
-import { search as searchProviders, tmdbDetails, jikanDetails } from './providers.js';
+import { search as searchProviders, tmdbDetails, jikanDetails, checkTmdbKey } from './providers.js';
 import { recommend, clearCache as clearRecsCache } from './recs.js';
 import {
   $, $$, itemCard, detailSheet, manualSheet, statsView, toast, voteBadge,
@@ -137,7 +137,7 @@ async function runSearch() {
     list.innerHTML = '';
     status.className = failed ? 'hint hint--error' : 'hint';
     status.textContent = failed
-      ? `${failed}. Попробуй ещё раз через минуту или добавь вручную.`
+      ? `${failed}. Проверь связь с TMDB в настройках или добавь вручную.`
       : 'Ничего не нашлось. Попробуй оригинальное название или добавь вручную.';
     return;
   }
@@ -145,7 +145,9 @@ async function runSearch() {
   status.hidden = !failed;
   if (failed) {
     status.className = 'hint';
-    status.textContent = `${failed} — показываю то, что нашли остальные.`;
+    status.textContent = payload.fellBack
+      ? `${failed} — искал в бесплатных базах, там в основном оригинальные названия.`
+      : `${failed} — показываю то, что нашли остальные.`;
   }
 
   list.innerHTML = payload.results
@@ -712,6 +714,8 @@ function wireSettings() {
     toast('Язык поиска обновлён');
   });
 
+  $('#btn-check-key').addEventListener('click', verifyKey);
+
   $('#btn-export').addEventListener('click', exportBackup);
   $('#nudge-btn').addEventListener('click', exportBackup);
   $('#btn-import').addEventListener('click', () => $('#import-file').click());
@@ -737,6 +741,31 @@ function resetRecs() {
   clearRecsCache();
   recsState.byType.clear();
   recsState.round = 0;
+}
+
+/** Проверяет ключ и, главное, отличает плохой ключ от недоступной TMDB. */
+async function verifyKey() {
+  const slot = $('#key-status');
+  const button = $('#btn-check-key');
+
+  slot.hidden = false;
+  slot.textContent = 'Проверяю…';
+  button.disabled = true;
+
+  const prefs = store.getPrefs();
+  const result = await checkTmdbKey($('#tmdb-key').value.trim() || prefs.tmdbKey, prefs.lang);
+  button.disabled = false;
+
+  const messages = {
+    ok:          '✅ Связь есть, ключ рабочий.',
+    empty:       '⚠️ Ключ не введён.',
+    'bad-key':   '❌ TMDB не принял ключ. Скопируй его заново со страницы Settings → API.',
+    server:      `⚠️ TMDB ответила ошибкой ${result.status}. Это на их стороне, попробуй позже.`,
+    unreachable: '❌ TMDB не отвечает вообще. Ключ, скорее всего, в порядке — это сеть. '
+               + 'Попробуй мобильный интернет вместо Wi-Fi (или наоборот) либо VPN. '
+               + 'Поиск пока будет работать через бесплатные базы.',
+  };
+  slot.textContent = messages[result.reason] || 'Не удалось проверить.';
 }
 
 function wireGlobal() {
