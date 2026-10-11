@@ -7,6 +7,10 @@ import {
   $, $$, itemCard, detailSheet, manualSheet, statsView, toast, voteBadge,
 } from './ui.js';
 
+// Версия видна в настройках: без неё не понять, какая сборка реально
+// запущена на телефоне, а обновления доезжают не мгновенно.
+const APP_VERSION = '1.6';
+
 /* -------------------------------- состояние ------------------------------- */
 
 const libFilters = { query: '', type: 'all', status: 'all', sort: 'added_desc' };
@@ -854,6 +858,7 @@ async function init() {
   wireRecs();
   wireSettings();
 
+  $('#app-version').textContent = `CollectMovie · локальный трекер · v${APP_VERSION}`;
   renderLibrary();
 
   const start = location.hash.replace('#', '');

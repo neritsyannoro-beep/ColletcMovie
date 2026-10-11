@@ -4,7 +4,7 @@
  * они всегда идут в сеть.
  */
 
-const CACHE = 'collectmovie-v5';
+const CACHE = 'collectmovie-v6';
 
 const SHELL = [
   './',
@@ -43,29 +43,29 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;   // API и постеры — мимо кэша
 
-  // stale-while-revalidate: сразу отдаём кэш, в фоне обновляем.
+  // Сначала сеть, кэш — только запасной вариант.
+  //
+  // Раньше было наоборот (отдаём кэш, обновляем в фоне), и это скрывало
+  // исправления: при запуске показывалась прошлая сборка, а новая доезжала
+  // лишь со следующего открытия. Приложение весит считанные килобайты, так
+  // что поход в сеть ничего не стоит, а офлайн всё так же работает.
   event.respondWith(
     caches.open(CACHE).then(async (cache) => {
-      const cached = await cache.match(request, { ignoreSearch: true });
+      try {
+        const fresh = await fetch(request);
+        if (fresh && fresh.ok) cache.put(request, fresh.clone());
+        return fresh;
+      } catch {
+        const cached = await cache.match(request, { ignoreSearch: true });
+        if (cached) return cached;
 
-      const network = fetch(request)
-        .then((response) => {
-          if (response && response.ok) cache.put(request, response.clone());
-          return response;
-        })
-        .catch(() => null);
-
-      if (cached) return cached;
-
-      const fresh = await network;
-      if (fresh) return fresh;
-
-      // Офлайн и вообще ничего нет — для навигации отдаём оболочку.
-      if (request.mode === 'navigate') {
-        const shell = await cache.match('./index.html');
-        if (shell) return shell;
+        // Офлайн и ничего не сохранено — для навигации отдаём оболочку.
+        if (request.mode === 'navigate') {
+          const shell = await cache.match('./index.html');
+          if (shell) return shell;
+        }
+        return new Response('Офлайн', { status: 503, statusText: 'Offline' });
       }
-      return new Response('Офлайн', { status: 503, statusText: 'Offline' });
     })
   );
 });

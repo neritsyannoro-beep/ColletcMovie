@@ -23,6 +23,9 @@ const TMDB_API = 'https://api.themoviedb.org/3';
  * её. Любой успешный ответ размыкатель снимает.
  */
 const TMDB_COOLDOWN = 60 * 1000;
+
+/** Ни один источник не вправе держать выдачу дольше этого. */
+const JOB_DEADLINE = 11000;
 let tmdbDownUntil = 0;
 
 const tmdbLooksDown = () => Date.now() < tmdbDownUntil;
@@ -459,7 +462,13 @@ export async function search(query, type, prefs = {}, options = {}) {
    */
   const runJobs = (jobs) => Promise.all(jobs.map(async ([label, run]) => {
     try {
-      collected.push(...await run());
+      // Страховка от источника, который не отвечает и не падает: у каждого
+      // свой таймаут, но потолок нужен и на случай, если он не сработает.
+      const found = await Promise.race([
+        run(),
+        delay(JOB_DEADLINE).then(() => { throw new Error('deadline'); }),
+      ]);
+      collected.push(...found);
     } catch {
       failed.push(label);
     }

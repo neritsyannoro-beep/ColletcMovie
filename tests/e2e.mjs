@@ -367,6 +367,34 @@ const aborted = await page.evaluate(async () => {
 });
 ok('оборванный запрос не приносит результатов', aborted === 0, String(aborted));
 
+// ---- 27. версия видна в настройках ----
+await page.locator('.tab[data-goto="settings"]').click();
+const ver = await page.locator('#app-version').textContent();
+ok('версия сборки видна', /v\d+\.\d+/.test(ver), ver);
+
+// ---- 28. мёртвый источник не держит выдачу вечно ----
+await page.evaluate(() => localStorage.setItem('collectmovie:prefs', '{}'));
+await page.reload({ waitUntil:'networkidle' });
+await page.unroute('**/api.jikan.moe/**');
+await page.unroute('**/graphql.anilist.co/**');
+await page.unroute('**/api.tvmaze.com/**');
+// аниме-источник не отвечает и не падает — ровно то, что вешало поиск
+await page.route('**/api.jikan.moe/**', async () => { await new Promise(() => {}); });
+await page.route('**/graphql.anilist.co/**', async () => { await new Promise(() => {}); });
+await page.route('**/api.tvmaze.com/**', r => r.fulfill({ contentType:'application/json',
+  body: JSON.stringify([{ score:1, show:{ id:169, name:'Breaking Bad', premiered:'2008-01-20',
+    image:null, summary:'<p>Химия.</p>', genres:['Драма'], weight:99 } }])}));
+await page.locator('.tab[data-goto="search"]').click();
+const t0 = Date.now();
+await page.locator('#search-input').fill('breaking');
+await page.waitForSelector('#search-list .item', { timeout: 20000 });
+ok('живой источник не ждёт мёртвый', Date.now() - t0 < 5000, `${Date.now() - t0} мс`);
+await page.waitForFunction(() => !document.querySelector('#search-status')
+  .innerHTML.includes('spinner'), null, { timeout: 25000 });
+ok('поиск завершается, а не висит бесконечно',
+   /аниме-база/.test(await page.locator('#search-status').textContent()),
+   await page.locator('#search-status').textContent());
+
 } catch (err) {
   console.log('\n!!! ТЕСТ УПАЛ: ' + err.message.split('\n')[0]);
   try {

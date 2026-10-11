@@ -202,7 +202,7 @@ assets/js/store.js         хранилище: localStorage + IndexedDB + сни
 assets/js/providers.js     источники поиска: TMDB, Jikan, AniList, TVmaze, iTunes
 assets/js/recs.js          подбор советов на основе оценок
 assets/js/ui.js            отрисовка карточек, шторки, статистики
-sw.js                      service worker: офлайн-режим
+sw.js                      service worker: офлайн-режим (сеть вперёд кэша)
 manifest.webmanifest       описание PWA
 tests/e2e.mjs              сквозные тесты
 tests/recs.mjs             тесты вкладки «Советы»
