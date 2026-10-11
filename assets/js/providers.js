@@ -15,6 +15,19 @@
  */
 
 const TMDB_API = 'https://api.themoviedb.org/3';
+
+/**
+ * Когда TMDB недоступна (а из некоторых сетей она недоступна подолгу), ждать
+ * её таймаут на каждом запросе — это лишние секунды в пустоту. Запоминаем
+ * отказ на минуту и всё это время опрашиваем запасные базы сразу, не дожидаясь
+ * её. Любой успешный ответ размыкатель снимает.
+ */
+const TMDB_COOLDOWN = 60 * 1000;
+let tmdbDownUntil = 0;
+
+const tmdbLooksDown = () => Date.now() < tmdbDownUntil;
+const markTmdbDown  = () => { tmdbDownUntil = Date.now() + TMDB_COOLDOWN; };
+const markTmdbUp    = () => { tmdbDownUntil = 0; };
 const TMDB_IMG = 'https://image.tmdb.org/t/p/w342';
 
 /* -------------------------------- утилиты -------------------------------- */
@@ -30,11 +43,20 @@ const yearOf = (date) => {
   return Number.isFinite(y) && y > 1870 ? y : null;
 };
 
-async function fetchJSON(url, { timeout = 12000 } = {}) {
+/**
+ * @param {{timeout?:number, signal?:AbortSignal, init?:RequestInit}} options
+ *   signal приходит снаружи: когда человек печатает дальше, прошлый запрос
+ *   надо оборвать, иначе браузер упирается в лимит соединений и новые
+ *   запросы ждут в очереди за уже ненужными.
+ */
+async function fetchJSON(url, { timeout = 8000, signal, init } = {}) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeout);
+  const relay = () => ctrl.abort();
+  signal?.addEventListener('abort', relay, { once: true });
+
   try {
-    const res = await fetch(url, { signal: ctrl.signal });
+    const res = await fetch(url, { ...init, signal: ctrl.signal });
     if (!res.ok) {
       const err = new Error(`HTTP ${res.status}`);
       err.status = res.status;
@@ -43,6 +65,7 @@ async function fetchJSON(url, { timeout = 12000 } = {}) {
     return await res.json();
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener('abort', relay);
   }
 }
 
@@ -73,16 +96,19 @@ async function withRetry(run, tries = 2) {
  * CORS-заголовков он не отдаёт, зато поддерживает ?callback=.
  */
 let jsonpSeq = 0;
-function fetchJSONP(url, { timeout = 12000 } = {}) {
+function fetchJSONP(url, { timeout = 8000, signal } = {}) {
   return new Promise((resolve, reject) => {
     const cb = `__cm_jsonp_${Date.now()}_${jsonpSeq++}`;
     const script = document.createElement('script');
     const done = (fn, arg) => {
       clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
       delete window[cb];
       script.remove();
       fn(arg);
     };
+    const onAbort = () => done(reject, new Error('aborted'));
+    signal?.addEventListener('abort', onAbort, { once: true });
     const timer = setTimeout(() => done(reject, new Error('timeout')), timeout);
 
     window[cb] = (data) => done(resolve, data);
@@ -138,21 +164,23 @@ function mapTMDB(r, kind, genres) {
   };
 }
 
-async function searchTMDB(query, kind, { key, lang }) {
+async function searchTMDB(query, kind, { key, lang, signal }) {
   const url = `${TMDB_API}/search/${kind}`
     + `?api_key=${encodeURIComponent(key)}`
     + `&query=${encodeURIComponent(query)}`
     + `&language=${lang}&include_adult=false&page=1`;
 
-  let data;
-  try {
-    data = await fetchJSON(url);
-  } catch (err) {
-    if (err.status === 401) throw new Error('TMDB отклонил ключ — проверь его в настройках.');
-    throw err;
-  }
+  // Список жанров — отдельный запрос, и ждать его после поиска незачем.
+  const [data, genres] = await Promise.all([
+    fetchJSON(url, { signal }).catch((err) => {
+      if (err.status === 401) throw new Error('TMDB отклонил ключ — проверь его в настройках.');
+      if (!signal?.aborted) markTmdbDown();
+      throw err;
+    }),
+    tmdbGenres(kind === 'movie' ? 'movie' : 'tv', key, lang),
+  ]);
 
-  const genres = await tmdbGenres(kind === 'movie' ? 'movie' : 'tv', key, lang);
+  markTmdbUp();
   return (data.results || []).map((r) => mapTMDB(r, kind, genres));
 }
 
@@ -230,11 +258,13 @@ export async function jikanRecommendations(id) {
 
 /* ---------------------------------- Jikan --------------------------------- */
 
-async function searchJikan(query) {
+async function searchJikan(query, options = {}) {
   const url = `https://api.jikan.moe/v4/anime`
     + `?q=${encodeURIComponent(query)}&limit=20&sfw=true`;
 
-  const data = await withRetry(() => fetchJSON(url));
+  // В поиске повтор не делаем: быстрее отдать очередь AniList, чем ждать
+  // вторую попытку у лежащего Jikan.
+  const data = await fetchJSON(url, { timeout: 6000, signal: options.signal });
 
   return (data.data || []).map((a) => {
     const title = a.title_english || a.title || a.title_japanese || 'Без названия';
@@ -261,7 +291,7 @@ async function searchJikan(query) {
 /* -------------------------------- AniList --------------------------------- */
 
 /** Запасная аниме-база: нужна, когда Jikan лежит (а он это любит). */
-async function searchAniList(query) {
+async function searchAniList(query, options = {}) {
   const gql = `query ($q: String) {
     Page(perPage: 20) {
       media(search: $q, type: ANIME, sort: SEARCH_MATCH) {
@@ -278,17 +308,15 @@ async function searchAniList(query) {
     }
   }`;
 
-  const res = await fetch('https://graphql.anilist.co', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ query: gql, variables: { q: query } }),
+  const data = await fetchJSON('https://graphql.anilist.co', {
+    timeout: 7000,
+    signal: options.signal,
+    init: {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ query: gql, variables: { q: query } }),
+    },
   });
-  if (!res.ok) {
-    const err = new Error(`HTTP ${res.status}`);
-    err.status = res.status;
-    throw err;
-  }
-  const data = await res.json();
 
   return (data?.data?.Page?.media || []).map((a) => {
     const title = a.title?.english || a.title?.romaji || a.title?.native || 'Без названия';
@@ -314,12 +342,12 @@ async function searchAniList(query) {
 }
 
 /** Аниме: сперва Jikan, если не отвечает — AniList. */
-async function searchAnime(query) {
+async function searchAnime(query, options = {}) {
   try {
-    return await searchJikan(query);
+    return await searchJikan(query, options);
   } catch (jikanError) {
     try {
-      return await searchAniList(query);
+      return await searchAniList(query, options);
     } catch {
       throw jikanError;   // сообщаем про основную базу, а не про запасную
     }
@@ -328,9 +356,9 @@ async function searchAnime(query) {
 
 /* --------------------------------- TVmaze --------------------------------- */
 
-async function searchTVmaze(query) {
-  const data = await withRetry(() =>
-    fetchJSON(`https://api.tvmaze.com/search/shows?q=${encodeURIComponent(query)}`));
+async function searchTVmaze(query, options = {}) {
+  const data = await fetchJSON(
+    `https://api.tvmaze.com/search/shows?q=${encodeURIComponent(query)}`, options);
 
   return (data || []).map(({ show: s }) => ({
     id:            `tvmaze-${s.id}`,
@@ -349,13 +377,13 @@ async function searchTVmaze(query) {
 
 /* --------------------------------- iTunes --------------------------------- */
 
-async function searchITunes(query, lang) {
+async function searchITunes(query, lang, options = {}) {
   const country = lang === 'ru-RU' ? 'RU' : 'US';
   const url = 'https://itunes.apple.com/search'
     + `?term=${encodeURIComponent(query)}&media=movie&entity=movie`
     + `&limit=20&country=${country}`;
 
-  const data = await fetchJSONP(url);
+  const data = await fetchJSONP(url, options);
 
   return (data.results || []).map((r) => ({
     id:            `itunes-${r.trackId}`,
@@ -382,65 +410,81 @@ async function searchITunes(query, lang) {
  * @param {{tmdbKey?:string, lang?:string}} prefs
  * @returns {Promise<{results:Array, warnings:string[], hasKey:boolean}>}
  */
-export async function search(query, type, prefs = {}) {
+export async function search(query, type, prefs = {}, options = {}) {
   const q = query.trim();
   const key = (prefs.tmdbKey || '').trim();
-  if (q.length < 2) return { results: [], warnings: [], hasKey: Boolean(key), fellBack: false };
+  const blank = { results: [], warnings: [], hasKey: Boolean(key), fellBack: false };
+  if (q.length < 2) return blank;
 
   const lang = prefs.lang || 'ru-RU';
+  const { signal, onUpdate } = options;
   const want = (t) => type === 'all' || type === t;
+  const net = { signal };
 
   // Аниме-база нужна при любом раскладе: у TMDB она неполная.
-  const animeJobs = want('anime') ? [['аниме-база', () => searchAnime(q)]] : [];
+  const animeJobs = want('anime') ? [['аниме-база', () => searchAnime(q, net)]] : [];
 
   const freeJobs = [
-    ...(want('movie')  ? [['база фильмов (iTunes)',  () => searchITunes(q, lang)]] : []),
-    ...(want('series') ? [['база сериалов (TVmaze)', () => searchTVmaze(q)]] : []),
+    ...(want('movie')  ? [['база фильмов (iTunes)',  () => searchITunes(q, lang, net)]] : []),
+    ...(want('series') ? [['база сериалов (TVmaze)', () => searchTVmaze(q, net)]] : []),
   ];
 
   const tmdbJobs = key ? [
     // Аниме в TMDB лежит среди фильмов и сериалов, поэтому для вкладки
     // «Аниме» тоже нужны оба запроса — тип разберём после ответа.
-    ...(want('movie')  || want('anime') ? [['TMDB', () => searchTMDB(q, 'movie', { key, lang })]] : []),
-    ...(want('series') || want('anime') ? [['TMDB', () => searchTMDB(q, 'tv',    { key, lang })]] : []),
+    ...(want('movie')  || want('anime') ? [['TMDB', () => searchTMDB(q, 'movie', { key, lang, signal })]] : []),
+    ...(want('series') || want('anime') ? [['TMDB', () => searchTMDB(q, 'tv',    { key, lang, signal })]] : []),
   ] : [];
 
-  const primary = await runJobs([...(key ? tmdbJobs : freeJobs), ...animeJobs]);
-  const results = primary.results;
-  const failed  = primary.failed;
+  const collected = [];
+  const failed = [];
   let fellBack = false;
+
+  const snapshot = () => {
+    // Тип у результатов TMDB уточняется уже после ответа, поэтому лишнее
+    // отсеиваем здесь, а не на этапе выбора запросов.
+    const matching = type === 'all' ? collected : collected.filter((r) => r.type === type);
+    return {
+      results: rank(dedupe(matching), q),
+      warnings: [...new Set(failed)],
+      hasKey: Boolean(key),
+      fellBack,
+    };
+  };
+
+  /**
+   * Источники опрашиваются разом, и выдача обновляется по мере ответов.
+   * Раньше ждали, пока ответят все: быстрый Jikan простаивал, пока
+   * недоступная TMDB добивала свой таймаут.
+   */
+  const runJobs = (jobs) => Promise.all(jobs.map(async ([label, run]) => {
+    try {
+      collected.push(...await run());
+    } catch {
+      failed.push(label);
+    }
+    if (!signal?.aborted) onUpdate?.(snapshot());
+  }));
+
+  // Если TMDB только что падала, не ждём её в одиночку — зовём всех сразу.
+  const upfrontBackup = key && tmdbLooksDown();
+  if (upfrontBackup) fellBack = true;
+
+  await runJobs([
+    ...(key ? tmdbJobs : freeJobs),
+    ...(upfrontBackup ? freeJobs : []),
+    ...animeJobs,
+  ]);
 
   // TMDB не ответила — не оставляем человека с пустым экраном: бесплатные
   // базы знают меньше русских названий, но это лучше, чем ничего.
-  if (key && failed.includes('TMDB') && freeJobs.length) {
-    const backup = await runJobs(freeJobs);
-    results.push(...backup.results);
-    failed.push(...backup.failed);
-    fellBack = backup.results.length > 0;
+  if (key && !upfrontBackup && failed.includes('TMDB') && freeJobs.length && !signal?.aborted) {
+    const before = collected.length;
+    await runJobs(freeJobs);
+    fellBack = collected.length > before;
   }
 
-  // Тип у результатов TMDB уточняется уже после ответа, поэтому лишнее
-  // отсеиваем здесь, а не на этапе выбора запросов.
-  const matching = type === 'all' ? results : results.filter((r) => r.type === type);
-
-  return {
-    results: rank(dedupe(matching), q),
-    warnings: [...new Set(failed)],
-    hasKey: Boolean(key),
-    fellBack,
-  };
-}
-
-/** Запускает источники разом и помечает те, что не ответили. */
-async function runJobs(jobs) {
-  const settled = await Promise.allSettled(jobs.map(([, run]) => run()));
-  const results = [];
-  const failed = [];
-  settled.forEach((outcome, i) => {
-    if (outcome.status === 'fulfilled') results.push(...outcome.value);
-    else failed.push(jobs[i][0]);
-  });
-  return { results, failed };
+  return snapshot();
 }
 
 /**
@@ -452,6 +496,7 @@ export async function checkTmdbKey(key, lang = 'ru-RU') {
   try {
     await fetchJSON(`${TMDB_API}/configuration?api_key=${encodeURIComponent(key)}&language=${lang}`,
                     { timeout: 10000 });
+    markTmdbUp();   // связь появилась — снимаем размыкатель, не ждём минуту
     return { ok: true, reason: 'ok' };
   } catch (err) {
     if (err.status === 401) return { ok: false, reason: 'bad-key' };

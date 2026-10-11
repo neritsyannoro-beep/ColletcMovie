@@ -4,7 +4,7 @@
  * они всегда идут в сеть.
  */
 
-const CACHE = 'collectmovie-v4';
+const CACHE = 'collectmovie-v5';
 
 const SHELL = [
   './',

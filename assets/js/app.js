@@ -10,7 +10,7 @@ import {
 /* -------------------------------- состояние ------------------------------- */
 
 const libFilters = { query: '', type: 'all', status: 'all', sort: 'added_desc' };
-const searchState = { query: '', type: 'all', results: [], seq: 0 };
+const searchState = { query: '', type: 'all', results: [], seq: 0, abort: null };
 // Подборки держим по категориям: одна общая переменная приводила к тому,
 // что при возврате на вкладку показывались результаты предыдущей.
 const recsState   = { type: 'movie', byType: new Map(), seq: 0, round: 0 };
@@ -99,7 +99,13 @@ async function runSearch() {
   const idle   = $('#search-idle');
   const status = $('#search-status');
 
+  // Прошлый запрос больше не нужен: без отмены он занимает соединение, и
+  // новые запросы ждут в очереди за уже неактуальными. Из-за этого поиск
+  // и растягивался на минуты, пока человек печатал.
+  searchState.abort?.abort();
+
   if (q.length < 2) {
+    searchState.abort = null;
     list.innerHTML = '';
     status.hidden = true;
     idle.hidden = false;
@@ -113,46 +119,68 @@ async function runSearch() {
   status.innerHTML = '<span class="spinner"></span>Ищу…';
 
   const seq = ++searchState.seq;
+  const controller = new AbortController();
+  searchState.abort = controller;
+
+  const show = (payload, done) => {
+    if (seq !== searchState.seq) return;   // ответ на устаревший запрос
+    searchState.results = payload.results;
+
+    if (payload.results.length) {
+      list.innerHTML = payload.results
+        .map((r) => itemCard(r, 'search', store.get(r.id)))
+        .join('');
+    }
+
+    // Подсказка про ключ уместна ровно тогда, когда выдача бедная.
+    $('#search-tip').hidden = payload.hasKey || !done || payload.results.length >= 5;
+
+    const failed = payload.warnings.length
+      ? `Не ответила ${payload.warnings.join(' и ')}`
+      : '';
+
+    if (!done) {
+      // Пока ждём остальные источники, показываем найденное и не пугаем
+      // ошибками: часть из них ещё может ответить.
+      status.hidden = false;
+      status.className = 'hint';
+      status.innerHTML = '<span class="spinner"></span>'
+        + (payload.results.length ? 'Ищу дальше…' : 'Ищу…');
+      return;
+    }
+
+    if (!payload.results.length) {
+      list.innerHTML = '';
+      status.className = failed ? 'hint hint--error' : 'hint';
+      status.textContent = failed
+        ? `${failed}. Проверь связь с TMDB в настройках или добавь вручную.`
+        : 'Ничего не нашлось. Попробуй оригинальное название или добавь вручную.';
+      return;
+    }
+
+    status.hidden = !failed;
+    if (failed) {
+      status.className = 'hint';
+      status.textContent = payload.fellBack
+        ? `${failed} — искал в бесплатных базах, там в основном оригинальные названия.`
+        : `${failed} — показываю то, что нашли остальные.`;
+    }
+  };
+
   let payload;
   try {
-    payload = await searchProviders(q, searchState.type, store.getPrefs());
+    payload = await searchProviders(q, searchState.type, store.getPrefs(), {
+      signal: controller.signal,
+      onUpdate: (partial) => show(partial, false),
+    });
   } catch (err) {
-    if (seq !== searchState.seq) return;
+    if (seq !== searchState.seq || controller.signal.aborted) return;
     status.className = 'hint hint--error';
     status.textContent = `Поиск не сработал: ${err.message}`;
     return;
   }
-  if (seq !== searchState.seq) return;   // пришёл ответ на устаревший запрос
 
-  searchState.results = payload.results;
-
-  // Подсказка про ключ уместна ровно тогда, когда выдача бедная.
-  $('#search-tip').hidden = payload.hasKey || payload.results.length >= 5;
-
-  const failed = payload.warnings.length
-    ? `Не ответила ${payload.warnings.join(' и ')}`
-    : '';
-
-  if (!payload.results.length) {
-    list.innerHTML = '';
-    status.className = failed ? 'hint hint--error' : 'hint';
-    status.textContent = failed
-      ? `${failed}. Проверь связь с TMDB в настройках или добавь вручную.`
-      : 'Ничего не нашлось. Попробуй оригинальное название или добавь вручную.';
-    return;
-  }
-
-  status.hidden = !failed;
-  if (failed) {
-    status.className = 'hint';
-    status.textContent = payload.fellBack
-      ? `${failed} — искал в бесплатных базах, там в основном оригинальные названия.`
-      : `${failed} — показываю то, что нашли остальные.`;
-  }
-
-  list.innerHTML = payload.results
-    .map((r) => itemCard(r, 'search', store.get(r.id)))
-    .join('');
+  show(payload, true);
 }
 
 /* --------------------------------- шторка --------------------------------- */
@@ -679,6 +707,7 @@ function wireSearch() {
     searchState.type = chip.dataset.type;
     $$('#search-type-chips .chip').forEach((c) => c.classList.toggle('is-active', c === chip));
     clearTimeout(searchTimer);
+    $('#search-list').innerHTML = '';
     runSearch();
   });
 

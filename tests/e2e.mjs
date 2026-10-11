@@ -317,6 +317,56 @@ await page.waitForFunction(() => /не отвечает/.test(
 const unreach = await page.locator('#key-status').textContent();
 ok('недоступность TMDB отличается от плохого ключа', /сеть/.test(unreach), unreach);
 
+// ---- 25. быстрый источник не ждёт зависшую TMDB ----
+await page.evaluate(() => localStorage.setItem('collectmovie:prefs', JSON.stringify({ tmdbKey:'K', lang:'ru-RU' })));
+await page.reload({ waitUntil:'networkidle' });
+await page.unroute('**/api.themoviedb.org/3/search/**');
+await page.unroute('**/api.jikan.moe/**');
+await page.unroute('**/graphql.anilist.co/**');
+// TMDB «висит» — ответа не будет вовсе, а Jikan отвечает быстро
+await page.route('**/api.themoviedb.org/3/search/**', async () => { await new Promise(() => {}); });
+await page.route('**/api.jikan.moe/v4/anime?**', r => r.fulfill({ contentType:'application/json',
+  body: JSON.stringify({ data:[{ mal_id:20, title:'Naruto', images:{jpg:{large_image_url:''}},
+    year:2002, synopsis:'Ниндзя.', genres:[], episodes:220, members:100, score:7.9 }]})}));
+await page.locator('.tab[data-goto="search"]').click();
+const started = Date.now();
+await page.locator('#search-input').fill('naruto');
+await page.waitForSelector('#search-list .item', { timeout: 20000 });
+const firstPaint = Date.now() - started;
+ok('быстрый источник показан, не дожидаясь зависшей TMDB', firstPaint < 4000, `${firstPaint} мс`);
+ok('пока ждём остальных, видно что поиск продолжается',
+   (await page.locator('#search-status').innerHTML()).includes('spinner'),
+   await page.locator('#search-status').textContent());
+
+// размыкатель: следующий запрос уже не ждёт TMDB в одиночку
+await page.waitForFunction(() => !document.querySelector('#search-status')
+  .innerHTML.includes('spinner'), null, { timeout: 20000 });
+const second = Date.now();
+await page.locator('#search-input').fill('naruto 2');
+await page.waitForSelector('#search-list .item', { timeout: 20000 });
+ok('после отказа TMDB следующий поиск не ждёт её таймаут',
+   Date.now() - second < 4000, `${Date.now() - second} мс`);
+
+// ---- 26. новый запрос обрывает предыдущий ----
+let jikanHits = 0;
+await page.unroute('**/api.jikan.moe/**');
+await page.route('**/api.jikan.moe/v4/anime?**', async r => {
+  jikanHits++;
+  await new Promise(res => setTimeout(res, 1500));
+  await r.fulfill({ contentType:'application/json', body: JSON.stringify({ data:[
+    { mal_id: 20, title:'Naruto', images:{jpg:{large_image_url:''}}, year:2002,
+      synopsis:'Ниндзя.', genres:[], episodes:220, members:100, score:7.9 }]})});
+});
+const aborted = await page.evaluate(async () => {
+  const providers = await import('./assets/js/providers.js');
+  const ctrl = new AbortController();
+  const promise = providers.search('naruto', 'anime', { tmdbKey:'' }, { signal: ctrl.signal });
+  ctrl.abort();
+  const res = await promise;
+  return res.results.length;
+});
+ok('оборванный запрос не приносит результатов', aborted === 0, String(aborted));
+
 } catch (err) {
   console.log('\n!!! ТЕСТ УПАЛ: ' + err.message.split('\n')[0]);
   try {
